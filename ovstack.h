@@ -2,8 +2,8 @@
  * Overlay Routing Stack 
  */
 
-#ifndef _OVSTACK_H_
-#define _OVSTACK_H_
+#ifndef _LINUX_OVSTACK_H_
+#define _LINUX_OVSTACK_H_
 
 #define OV_PROTO_IP	4
 #define OV_PROTO_IPV6	6
@@ -76,4 +76,4 @@ int ovstack_ipv6_dst_loc (struct in6_addr * addr,
 
 
 
-#endif /* _OVSTACK_ */
+#endif /* _LINUX_OVSTACK_ */
