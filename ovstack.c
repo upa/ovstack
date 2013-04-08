@@ -357,6 +357,16 @@ static struct pernet_operations ovstack_net_ops = {
  ****	genl_ops 
  *****************************/
 
+
+static struct genl_family ovstack_nl_family = {
+	.id		= GENL_ID_GENERATE,
+	.name		= OVSTACK_GENL_NAME,
+	.version	= OVSTACK_GENL_VERSION,
+	.hdrsize	= 0,
+	.maxattr	= OVSTACK_ATTR_MAX,
+};
+
+
 static int
 ovstack_nl_cmd_node_id_set (struct sk_buff * skb, struct genl_info * info)
 {
@@ -736,15 +746,6 @@ ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 	return 0;
 }
 
-
-static struct genl_family ovstack_nl_family = {
-	.id		= GENL_ID_GENERATE,
-	.name		= OVSTACK_GENL_NAME,
-	.version	= OVSTACK_GENL_VERSION,
-	.hdrsize	= 0,
-	.maxattr	= OVSTACK_ATTR_MAX,
-};
-
 static struct nla_policy ovstack_nl_policy[OVSTACK_ATTR_MAX + 1] = {
 	[OVSTACK_ATTR_NONE]		= { .type = NLA_UNSPEC, },
 	[OVSTACK_ATTR_NODE_ID]		= { .type = NLA_U32, },
@@ -958,6 +959,7 @@ static void
 __exit ovstack_exit_module (void)
 {
 
+	genl_unregister_family (&ovstack_nl_family);
 	unregister_pernet_subsys (&ovstack_net_ops);
 
 	printk (KERN_INFO "overlay stack (version %s) is unloaded\n",
