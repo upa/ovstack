@@ -1,0 +1,9 @@
+*.ko
+*.o
+*.mod.c
+.*.cmd
+.tmp*
+.*.swp
+reset.sh
+modules.order
+Module.symvers
