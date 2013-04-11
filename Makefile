@@ -5,8 +5,6 @@ c_flags = -DDEBUG
 
 obj-m := ovstack.o
 
-empmod-objs := 
-
 all:
 	make -C $(KERNELSRCDIR) SUBDIRS=$(BUILD_DIR) KBUILD_VERBOSE=$(VERBOSE)  modules
 

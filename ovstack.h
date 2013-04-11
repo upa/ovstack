@@ -10,7 +10,9 @@
 #define OVSTACK_PROTO_ETHER     7
 #define OVSTACK_PROTO_MAX       255
 
+#define OVSTACK_TTL		128
 #define OVSTACK_PORT            60002
+
 
 /* overlay header */
 struct ovhdr {
