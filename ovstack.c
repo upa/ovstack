@@ -11,6 +11,8 @@
 #include <linux/string.h>
 #include <linux/rculist.h>
 #include <linux/hash.h>
+#include <linux/udp.h>
+#include <net/udp.h>
 #include <net/sock.h>
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
@@ -40,6 +42,12 @@ MODULE_AUTHOR ("upa@haeena.net");
 
 static unsigned int ovstack_net_id;
 static u32 ovstack_salt __read_mostly;
+
+/* callback functions called when receive a packet. */
+struct ovstack_recv_ops {
+	int (* proto_recv_ops[OVSTACK_PROTO_MAX])
+	(struct sock * sk, struct sk_buff * skb);
+} ov_recv_ops;
 
 
 /* Overlay Node */
@@ -101,6 +109,7 @@ struct ov_locator {
 struct ovstack_net {
 	struct ov_node own_node;			/* self */
 	struct list_head node_list[LIB_HASH_SIZE];	/* node list hash */
+	struct socket * sock;				/* udp encap socket */
 };
 #define OVSTACK_NET_OWNNODE(ovnet) (&(ovnet->own_node))
 
@@ -300,12 +309,49 @@ ov_locator_weight_set (struct ov_locator * loc, u8 weight)
  ****	pernet operations
  *****************************/
 
+static int
+ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
+{
+	/*
+	 * call function pointer according to ovstack protocl number
+	 */
+
+	struct ovhdr * ovh;
+
+	/* pop off outer UDP header */
+	__skb_pull (skb, sizeof (struct udphdr));
+
+	/* need ov and inner ether header to present */
+	if (!pskb_may_pull (skb, sizeof (struct ovhdr))) {
+		skb_push (skb, sizeof (struct udphdr));
+		return 1;
+	}
+
+	/* call function per ov proto */
+	ovh = (struct ovhdr *) skb->data;
+	if (unlikely (ov_recv_ops.proto_recv_ops[ovh->ov_protocol] == NULL)) {
+		pr_debug ("%s: unknwon protocol number %d\n", 
+			  __func__, ovh->ov_protocol);
+		return 0;
+	}
+
+	return ov_recv_ops.proto_recv_ops[ovh->ov_protocol] (sk, skb);
+}
+
+
+
 static __net_init int
 ovstack_init_net (struct net * net)
 {
-	int n;
+	int rc, n;
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ov_node * own = OVSTACK_NET_OWNNODE (ovnet);
+	struct sock * sk;
+	struct sockaddr_in6 ovstack_addr = {
+		.sin6_family	= AF_INET6,
+		.sin6_port	= htons (OVSTACK_PORT),
+		.sin6_addr	= IN6ADDR_ANY_INIT,
+	};
 	
 	/* init lib */
 	for (n = 0; n < LIB_HASH_SIZE; n++) 
@@ -316,6 +362,32 @@ ovstack_init_net (struct net * net)
 	INIT_LIST_HEAD (&(own->ipv4_locator_list));
 	INIT_LIST_HEAD (&(own->ipv6_locator_list));
 	own->update = jiffies;
+
+	/* udp encapsulation socket init */
+	rc = sock_create_kern (AF_INET6, SOCK_DGRAM, 
+			       IPPROTO_UDP, &(ovnet->sock));
+	if (rc < 0) {
+		pr_debug ("UDP socket create failed\n");
+		return rc;
+	}
+	
+	sk = ovnet->sock->sk;
+	sk_change_net (sk, net);
+
+	rc = kernel_bind (ovnet->sock, (struct sockaddr *)&(ovstack_addr),
+			  sizeof (ovstack_addr));
+	if (rc < 0) {
+		pr_debug ("bind for UDP socket %pI6:%u (%d) failed\n",
+			  &(ovstack_addr.sin6_addr),
+			  ntohs (ovstack_addr.sin6_port), rc);
+		sk_release_kernel (sk);
+		ovnet->sock = NULL;
+		return rc;
+	}
+
+	udp_sk (sk)->encap_type = 1;
+	udp_sk (sk)->encap_rcv = ovstack_udp_encap_recv;
+	udp_encap_enable ();
 
 	return 0;
 }
@@ -817,6 +889,7 @@ static struct genl_ops ovstack_nl_ops[] = {
 	},
 };
 
+
 /*****************************
  *	EXPORT SYMBOLS
  *****************************/
@@ -925,6 +998,36 @@ ovstack_ipv6_dst_loc (struct in6_addr * addr,
 }
 EXPORT_SYMBOL (ovstack_ipv6_dst_loc);
 
+int
+ovstack_register_recv_ops (int protocol, int (*proto_recv_ops)
+			   (struct sock * sk, struct sk_buff * skb))
+{
+	if (protocol - 1> OVSTACK_PROTO_MAX) 
+		return -EINVAL;
+
+	if (ov_recv_ops.proto_recv_ops[protocol] != NULL) {
+		pr_debug ("%s: protocol %d recv func is already registered", 
+			  __func__, protocol);
+		return -EEXIST;
+	}
+
+	ov_recv_ops.proto_recv_ops[protocol] = proto_recv_ops;
+	return 1;
+}
+EXPORT_SYMBOL (ovstack_register_recv_ops);
+
+int
+ovstack_unregister_recv_ops (int protocol)
+{
+	if (protocol - 1 > OVSTACK_PROTO_MAX) 
+		return -EINVAL;
+
+	ov_recv_ops.proto_recv_ops[protocol] = NULL;
+	return 1;
+}
+EXPORT_SYMBOL (ovstack_unregister_recv_ops);
+
+
 
 /*****************************
  *	init/exit module
@@ -947,6 +1050,8 @@ __init ovstack_init_module (void)
 		unregister_pernet_subsys (&ovstack_net_ops);
 		return rc;
 	}
+
+	memset (&ov_recv_ops, 0, sizeof (ov_recv_ops));
 
 	printk (KERN_INFO "overlay stack (version %s) is loaded\n", 
 		OVSTACK_VERSION);
