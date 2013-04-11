@@ -19,6 +19,12 @@
 #include "rt_names.h"
 #include "libgenl.h"
 
+
+
+#define NODE_ID_OFFSET 24
+#define ADDRESS_OFFSET 46
+	
+
 /* netlink socket */
 static struct rtnl_handle genl_rth;
 static int genl_family = -1;
@@ -112,7 +118,7 @@ do_add_locator (int argc, char **argv)
 
 	parse_args (argc, argv, &p);
 
-	if (p.addr_flag) {
+	if (!p.addr_flag) {
 		fprintf (stderr, "address is not specified\n");
 		exit (-1);
 	}
@@ -151,11 +157,11 @@ do_add_node (int argc, char **argv)
 
 	parse_args (argc, argv, &p);
 
-	if (p.addr_flag) {
+	if (!p.addr_flag) {
 		fprintf (stderr, "address is not specified\n");
 		exit (-1);
 	}
-	if (p.node_id_flag) {
+	if (!p.node_id_flag) {
 		fprintf (stderr, "node id is not specified\n");
 		exit (-1);
 	}
@@ -218,7 +224,7 @@ do_del_locator (int argc, char **argv)
 
 	parse_args (argc, argv, &p);
 
-	if (p.addr_flag) {
+	if (!p.addr_flag) {
 		fprintf (stderr, "address is not specified\n");
 		exit (-1);
 	}
@@ -254,11 +260,11 @@ do_del_node (int argc, char **argv)
 
 	parse_args (argc, argv, &p);
 
-	if (p.addr_flag) {
+	if (!p.addr_flag) {
 		fprintf (stderr, "address is not specified\n");
 		exit (-1);
 	}
-	if (p.node_id_flag) {
+	if (!p.node_id_flag) {
 		fprintf (stderr, "node id is not specified\n");
 		exit (-1);
 	}
@@ -309,13 +315,13 @@ do_del (int argc, char ** argv)
 }
 
 static int
-do_set_id (int)
+do_set_id (int argc, char ** argv)
 {
 	struct ovstack_param p;
 
 	parse_args (argc, argv, &p);
 
-	if (p.node_id_flag) {
+	if (!p.node_id_flag) {
 		fprintf (stderr, "node id is not specified\n");
 		exit (-1);
 	}
@@ -332,16 +338,93 @@ do_set_id (int)
 }
 
 static int
-do_set_locator (argc - 1, argv + 1)
+do_set_locator (int argc, char ** argv)
 {
-	return 0
+	struct ovstack_param p;
+
+	parse_args (argc, argv, &p);
+
+	if (!p.addr_flag) {
+		fprintf (stderr, "address is not specified\n");
+		return -1;
+	}
+	if (!p.weight) {
+		fprintf (stderr, "weight is not specified\n");
+		return -1;
+	}
+
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_LOCATOR_WEIGHT_SET, 
+		      NLM_F_REQUEST | NLM_F_ACK);
+
+	switch (p.ai_family) {
+	case AF_INET :
+		addattr32 (&req.n, 1024, OVSTACK_ATTR_LOCATOR_IP4ADDR,
+			   *((__u32 *)&p.addr4));
+		break;
+	case AF_INET6 :
+		addattr_l (&req.n, 1024, OVSTACK_ATTR_LOCATOR_IP6ADDR,
+			   &(p.addr6), sizeof (struct in6_addr));
+		break;
+	default :
+		fprintf (stderr, "invalid ip address\n");
+		return -1;
+	}
+
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_LOCATOR_WEIGHT, p.weight);
+
+	if (rtnl_talk (&genl_rth, &req.n, 0, 0, NULL) < 0)
+		return -2;
+
+	return 0;
 }
 
 
 static int
-do_set_node (argc - 1, argv + 1)
+do_set_node (int argc, char ** argv)
 {
-	return 0
+	struct ovstack_param p;
+
+	parse_args (argc, argv, &p);
+
+	if (!p.node_id_flag) {
+		fprintf (stderr, "node id is not specified\n");
+		return -1;
+	}
+	if (!p.addr_flag) {
+		fprintf (stderr, "address is not specified\n");
+		return -1;
+	}
+	if (!p.weight) {
+		fprintf (stderr, "weight is not specified\n");
+		return -1;
+	}
+
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_NODE_WEIGHT_SET, NLM_F_REQUEST | NLM_F_ACK);
+
+	addattr32 (&req.n, 1024, OVSTACK_ATTR_NODE_ID, p.node_id);
+
+	switch (p.ai_family) {
+	case AF_INET :
+		addattr32 (&req.n, 1024, OVSTACK_ATTR_LOCATOR_IP4ADDR,
+			   *((__u32 *)&p.addr4));
+		break;
+	case AF_INET6 :
+		addattr_l (&req.n, 1024, OVSTACK_ATTR_LOCATOR_IP6ADDR,
+			   &(p.addr6), sizeof (struct in6_addr));
+		break;
+	default :
+		fprintf (stderr, "invalid ip address\n");
+		return -1;
+	}
+
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_LOCATOR_WEIGHT, p.weight);
+
+	if (rtnl_talk (&genl_rth, &req.n, 0, 0, NULL) < 0)
+		return -2;
+
+	return 0;
 }
 
 static int
@@ -353,7 +436,7 @@ do_set (int argc, char ** argv)
 	}
 
 	if (strcmp (*argv, "id") == 0)
-		return do _set_id (argc - 1, argv + 1);
+		return do_set_id (argc - 1, argv + 1);
 	if (strcmp (*argv, "locator")) 
 		return do_set_locator (argc - 1, argv + 1);
 	if (strcmp (*argv, "node") == 0) 
@@ -362,9 +445,181 @@ do_set (int argc, char ** argv)
 	return 0;
 }
 
+static void
+print_offset (char * param, int offset)
+{
+	int n;
+	for (n = 0; n < offset - strlen (param); n++) {
+		printf (" ");
+	}
+
+	return;
+}
+
+static int
+locator_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
+{
+	int len, ai_family = 0;
+	__u8 weight;
+	__u32 node_id;
+	__u32 addr[4];
+	char addrbuf4[16], addrbuf6[64];
+	struct genlmsghdr * ghdr;
+	struct rtattr *attrs[OVSTACK_ATTR_MAX + 1];
+
+	if (n->nlmsg_type == NLMSG_ERROR) {
+		fprintf (stderr, "%s: nlmsg_error\n", __func__);
+		return -EBADMSG;
+	}
+
+	ghdr = NLMSG_DATA (n);
+	len = n->nlmsg_len - NLMSG_LENGTH (sizeof (*ghdr));
+	if (len < 0) {
+		fprintf (stderr, "%s: nlmsg length error\n", __func__);
+		return -1;
+	}
+
+	parse_rtattr (attrs, OVSTACK_ATTR_MAX, 
+		      (void *)ghdr + GENL_HDRLEN, len);
+
+	if (!attrs[OVSTACK_ATTR_NODE_ID]) {
+		fprintf (stderr, "%s: empty node id\n", __func__);
+		return -1;
+	}
+	if (!attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]) {
+		fprintf (stderr, "%s: empty weight\n", __func__);
+		return -1;
+	}
+	if (attrs[OVSTACK_ATTR_LOCATOR_IP4ADDR]) {
+		memcpy (addr, RTA_DATA (attrs[OVSTACK_ATTR_LOCATOR_IP4ADDR]),
+			sizeof (struct in_addr));
+		ai_family = AF_INET;
+	}
+	if (attrs[OVSTACK_ATTR_LOCATOR_IP6ADDR]) {
+		memcpy (addr, RTA_DATA (attrs[OVSTACK_ATTR_LOCATOR_IP6ADDR]),
+			sizeof (struct in6_addr));
+		ai_family = AF_INET6;
+	}
+	if (ai_family == 0) {
+		fprintf (stderr, "%s: ip address is not defined\n", __func__);
+		return -2;
+	}
+		
+	node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_NODE_ID]);
+
+	weight = rta_getattr_u8 (attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]);
+	inet_ntop (AF_INET, &node_id, addrbuf4, sizeof (addrbuf4));
+	inet_ntop (ai_family, addr, addrbuf6, sizeof (addrbuf6));
+
+	printf ("%s", addrbuf4);
+	print_offset (addrbuf4, NODE_ID_OFFSET);
+	printf ("%s", addrbuf6);
+	print_offset (addrbuf6, ADDRESS_OFFSET);
+	printf ("%d\n", weight);
+
+	return 0;
+}
+
+static int
+do_show_id (int argc, char ** argv)
+{
+	int len;
+	char addrbuf4[16];
+	__u32 node_id;
+	struct genlmsghdr * ghdr;
+	struct rtattr * attrs[OVSTACK_ATTR_MAX + 1];
+
+	GENL_REQUEST (ans, 128, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_NODE_ID_GET, NLM_F_REQUEST);
+
+	GENL_REQUEST (req, 128, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_NODE_ID_GET, NLM_F_REQUEST);
+
+	if (rtnl_talk (&genl_rth, &req.n, 0, 0, (struct nlmsghdr *)&ans) < 0)
+		return -2;
+	
+	if (ans.n.nlmsg_type == NLMSG_ERROR) {
+		fprintf (stderr, "%s: nlmsg error\n", __func__);
+		return -EBADMSG;
+	}
+
+	ghdr = NLMSG_DATA (&(ans.n));
+	len = ans.n.nlmsg_len - NLMSG_LENGTH (sizeof (*ghdr));
+	if (len < 0) {
+		fprintf (stderr, "%s: nlmsg length error\n", __func__);
+		return -1;
+	}
+	
+	parse_rtattr (attrs, OVSTACK_ATTR_MAX, 
+		      (void *)ghdr + GENL_HDRLEN, len);
+
+	if (!attrs[OVSTACK_ATTR_NODE_ID]) {
+		fprintf (stderr, "%s: node id is not conatined\n", __func__);
+		return -1;
+	}
+	node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_NODE_ID]);
+
+	inet_ntop (AF_INET, &node_id, addrbuf4, sizeof (addrbuf4));
+	printf ("%s\n", addrbuf4);
+
+	return 0;
+}
+
+static int
+do_show_locator (int argc, char ** argv)
+{
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_LOCATOR_GET, 
+		      NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST);
+
+	req.n.nlmsg_seq = genl_rth.dump = ++genl_rth.seq;
+
+	if (rtnl_send (&genl_rth, &req, req.n.nlmsg_len) < 0)	
+		return -2;
+
+	if (rtnl_dump_filter (&genl_rth, locator_nlmsg, NULL) < 0) {
+		fprintf (stderr, "Dump terminated\n");
+		exit (1);
+	}
+
+	return 0;
+}
+
+static int
+do_show_node (int argc, char ** argv)
+{
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_NODE_GET, 
+		      NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST);
+
+	req.n.nlmsg_seq = genl_rth.dump = ++genl_rth.seq;
+
+	if (rtnl_send (&genl_rth, &req, req.n.nlmsg_len) < 0)	
+		return -2;
+
+	if (rtnl_dump_filter (&genl_rth, locator_nlmsg, NULL) < 0) {
+		fprintf (stderr, "Dump terminated\n");
+		exit (1);
+	}
+
+	return 0;
+}
+
 static int
 do_show (int argc, char ** argv)
 {
+	if (argc < 1) {
+		printf ("invalid argument.\n");
+		return -1;
+	}
+
+	if (strcmp (*argv, "id") == 0)
+		return do_show_id (argc - 1, argv + 1);
+	if (strcmp (*argv, "locator") == 0)
+		return do_show_locator (argc - 1, argv + 1);
+	if (strcmp (*argv, "node") == 0) 
+		return do_show_node (argc - 1, argv + 1);
+
 	return 0;
 }
 
