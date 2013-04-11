@@ -21,7 +21,7 @@
 
 
 
-#define NODE_ID_OFFSET 24
+#define NODE_ID_OFFSET 18
 #define ADDRESS_OFFSET 42
 	
 
@@ -437,10 +437,14 @@ do_set (int argc, char ** argv)
 
 	if (strcmp (*argv, "id") == 0)
 		return do_set_id (argc, argv);
-	if (strcmp (*argv, "locator")) 
+	if (strcmp (*argv, "locator") == 0) 
 		return do_set_locator (argc - 1, argv + 1);
 	if (strcmp (*argv, "node") == 0) 
 		return do_set_node (argc - 1, argv + 1);
+	else {
+		fprintf (stderr, "invalid command \"%s\"", *argv);
+		exit (1);
+	}
 
 	return 0;
 }
@@ -541,8 +545,6 @@ do_show_id (int argc, char ** argv)
 		return -2;
 	}
 	
-	printf ("hoge\n");
-
 	if (ans.n.nlmsg_type == NLMSG_ERROR) {
 		fprintf (stderr, "%s: nlmsg error\n", __func__);
 		return -EBADMSG;
@@ -608,9 +610,15 @@ do_show_node (int argc, char ** argv)
 	if (rtnl_send (&genl_rth, &req, req.n.nlmsg_len) < 0)	
 		return -2;
 
+	printf ("Node id");
+	print_offset ("Node id", NODE_ID_OFFSET);
+	printf ("Locator address");
+	print_offset ("Locator address", ADDRESS_OFFSET);
+	printf ("Weight\n");
+
 	if (rtnl_dump_filter (&genl_rth, locator_nlmsg, NULL) < 0) {
 		fprintf (stderr, "Dump terminated\n");
-	exit (1);
+		exit (1);
 	}
 
 	return 0;

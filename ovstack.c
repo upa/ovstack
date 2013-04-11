@@ -65,6 +65,8 @@ struct ov_node {
 	u8			ipv6_locator_count;
 	u32			ipv6_locator_weight_sum;
 };
+#define OV_NODE_NEXT(ovnode) \
+	list_entry_rcu (ovnode->chain.next, struct ov_node, chain)
 
 #define OV_NODE_LOC_COUNT_OPERATION(ovnode, af, op)	\
 	switch (af) {					\
@@ -115,6 +117,8 @@ struct ovstack_net {
 #define OVSTACK_NET_OWNNODE(ovnet) (&(ovnet->own_node))
 #define OVSTACK_NET_FIRSTNODE(ovnet)					\
 	(list_entry_rcu (ovnet->node_chain.next, struct ov_node, chain))
+#define OVSTACK_NET_LASTNODE(ovnet) \
+	(list_entry_rcu (ovnet->node_chain.prev, struct ov_node, chain))
 
 
 /********************
@@ -1014,30 +1018,32 @@ ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 {
 	struct net * net = sock_net (skb->sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ov_node * node;
-	__be32 node_id = cb->args[1];
-	
-	if (cb->args[2] == 1)
+	struct ov_node * node = NULL;
+	__be32 node_id;
+
+	node_id = cb->args[1];
+
+	if (node_id == 0xFFFFFFFF)
 		goto out;
 
-	if (node_id == 0) 
-		node = OVSTACK_NET_FIRSTNODE (ovnet);
-	else 
-		node = find_ov_node_by_id (ovnet, node_id);
-
+	node = (node_id == 0) ?
+		OVSTACK_NET_FIRSTNODE (ovnet) : 
+		find_ov_node_by_id (ovnet, node_id);
+	
 	if (node == NULL) 
 		goto out;
 
 	ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).pid,
 			      cb->nlh->nlmsg_seq, NLM_F_MULTI,
 			      OVSTACK_CMD_NODE_GET, node);
-	if (node->chain.next == NULL) {
-		cb->args[2] = 1;
-		goto out;
-	}
-	node = list_entry_rcu (node->chain.next, struct ov_node, chain);
-	cb->args[1] = node->node_id;
 
+
+	if (node == OVSTACK_NET_LASTNODE (ovnet)) 
+		node_id = 0xFFFFFFFF;
+	else
+		node_id = OV_NODE_NEXT(node)->node_id;
+
+	cb->args[1] = node_id;
 out:
 	return skb->len;
 }
