@@ -251,6 +251,9 @@ find_ov_locator_by_hash (struct ov_node * node, u32 hash, u8 ai_family)
 	} else if (ai_family == AF_INET6) {
 		li = &(node->ipv6_locator_list);
 		hash %=	node->ipv6_locator_weight_sum;
+	} else {
+		pr_debug ("%s: invalid ai family \"%d\"", __func__, ai_family);
+		return NULL;
 	}
 	
 	list_for_each_entry_rcu (loc, li, list) {
@@ -1137,6 +1140,65 @@ ovstack_own_node_id (struct net * net)
 	return OVSTACK_NET_OWNNODE(ovnet)->node_id;
 }
 EXPORT_SYMBOL (ovstack_own_node_id);
+
+int
+ovstack_ipv4_loc_count (struct net * net)
+{
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	return OVSTACK_NET_OWNNODE(ovnet)->ipv4_locator_count;
+}
+EXPORT_SYMBOL (ovstack_ipv4_loc_count);
+
+int
+ovstack_ipv6_loc_count (struct net * net)
+{
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	return OVSTACK_NET_OWNNODE(ovnet)->ipv6_locator_count;
+}
+EXPORT_SYMBOL (ovstack_ipv6_loc_count);
+
+int
+ovstack_src_loc (__be32 * addr, struct net * net, u32 hash)
+{
+	struct ov_locator * loc;
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+		
+
+	loc = find_ov_locator_by_hash (OVSTACK_NET_OWNNODE (ovnet),
+				       hash, AF_UNSPEC);
+	if (loc == NULL)
+		return 0;
+
+	memcpy (addr, &(loc->remote_ip),
+		(loc->remote_ip_family == AF_INET) ?
+		sizeof (struct in_addr) : sizeof (struct in6_addr));
+
+	return loc->remote_ip_family;
+}
+EXPORT_SYMBOL (ovstack_src_loc);
+
+int
+ovstack_dst_loc (__be32 * addr, struct net * net, __be32 node_id, u32 hash)
+{
+	struct ov_node * node;
+	struct ov_locator * loc;
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+		
+	node = find_ov_node_by_id (ovnet, node_id);
+	if (!node)
+		return 0;
+
+	loc = find_ov_locator_by_hash (node, hash, AF_UNSPEC);
+	if (loc == NULL)
+		return 0;
+
+	memcpy (addr, &(loc->remote_ip),
+		(loc->remote_ip_family == AF_INET) ?
+		sizeof (struct in_addr) : sizeof (struct in6_addr));
+
+	return loc->remote_ip_family;
+}
+EXPORT_SYMBOL (ovstack_dst_loc);
 
 int
 ovstack_ipv4_src_loc (struct in_addr * addr, struct net * net, u32 hash)

@@ -31,13 +31,25 @@ struct ovhdr {
 
 __be32 ovstack_own_node_id (struct net * net);
 
+
+int ovstack_ipv4_loc_count (struct net * net);
+int ovstack_ipv6_loc_count (struct net * net);
+
+/* return value : 
+ * AF_INET = ipv4 address, AF_INET6 = ipv6 address, 0 = failed 
+ */
+int ovstack_src_loc (__be32 * addr, struct net * net, u32 hash);
+int ovstack_dst_loc (__be32 * addr, struct net * net, 
+		     __be32 node_id, u32 hash);
+
 int ovstack_ipv4_src_loc (struct in_addr * addr, struct net * net, u32 hash);
-int ovstack_ipv4_dst_loc (struct in_addr * addr,
-			  struct net * net, __be32 node_id, u32 hash);
+int ovstack_ipv4_dst_loc (struct in_addr * addr, struct net * net, 
+			  __be32 node_id, u32 hash);
 
 int ovstack_ipv6_src_loc (struct in6_addr * addr, struct net * net, u32 hash);
-int ovstack_ipv6_dst_loc (struct in6_addr * addr,
-			  struct net * net, __be32 node_id, u32 hash);
+int ovstack_ipv6_dst_loc (struct in6_addr * addr, struct net * net, 
+			  __be32 node_id, u32 hash);
+
 
 int ovstack_register_recv_ops (int protocol, int (* proto_recv_ops)
 			       (struct sock * sk, struct sk_buff * skb));
