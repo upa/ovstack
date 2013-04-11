@@ -45,7 +45,7 @@ static void usage(void)
 "       ip [ -force ] -batch filename\n"
 "where  OBJECT := { link | addr | addrlabel | route | rule | neigh | ntable |\n"
 "                   tunnel | tuntap | maddr | mroute | mrule | monitor | xfrm |\n"
-"                   netns | l2tp | tcp_metrics | oveth }\n"
+"                   netns | l2tp | tcp_metrics | ov }\n"
 "       OPTIONS := { -V[ersion] | -s[tatistics] | -d[etails] | -r[esolve] |\n"
 "                    -f[amily] { inet | inet6 | ipx | dnet | bridge | link } |\n"
 "                    -l[oops] { maximum-addr-flush-attempts } |\n"
@@ -75,7 +75,7 @@ static const struct cmd {
 	{ "ntbl",	do_ipntable },
 	{ "link",	do_iplink },
 	{ "l2tp",	do_ipl2tp },
-	{ "oveth",	do_ipoveth },
+	{ "ov",		do_ipov },
 	{ "tunnel",	do_iptunnel },
 	{ "tunl",	do_iptunnel },
 	{ "tuntap",	do_iptuntap },

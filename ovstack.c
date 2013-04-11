@@ -20,6 +20,7 @@
 #include <net/genetlink.h>
 
 #include "ovstack.h"
+#include "ovstack_netlink.h"
 
 #define OVSTACK_VERSION "0.0.1"
 MODULE_VERSION (OVSTACK_VERSION);
