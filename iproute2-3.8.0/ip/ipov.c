@@ -22,7 +22,7 @@
 
 
 #define NODE_ID_OFFSET 24
-#define ADDRESS_OFFSET 46
+#define ADDRESS_OFFSET 42
 	
 
 /* netlink socket */
@@ -436,7 +436,7 @@ do_set (int argc, char ** argv)
 	}
 
 	if (strcmp (*argv, "id") == 0)
-		return do_set_id (argc - 1, argv + 1);
+		return do_set_id (argc, argv);
 	if (strcmp (*argv, "locator")) 
 		return do_set_locator (argc - 1, argv + 1);
 	if (strcmp (*argv, "node") == 0) 
@@ -529,15 +529,20 @@ do_show_id (int argc, char ** argv)
 	struct genlmsghdr * ghdr;
 	struct rtattr * attrs[OVSTACK_ATTR_MAX + 1];
 
-	GENL_REQUEST (ans, 128, genl_family, 0, OVSTACK_GENL_VERSION,
+	GENL_REQUEST (ans, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
 		      OVSTACK_CMD_NODE_ID_GET, NLM_F_REQUEST);
 
-	GENL_REQUEST (req, 128, genl_family, 0, OVSTACK_GENL_VERSION,
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
 		      OVSTACK_CMD_NODE_ID_GET, NLM_F_REQUEST);
 
-	if (rtnl_talk (&genl_rth, &req.n, 0, 0, (struct nlmsghdr *)&ans) < 0)
+	int ret;
+	if ((ret = rtnl_talk (&genl_rth, &req.n, 0, 0, &ans.n)) < 0) {
+		printf ("%d\n", ret);
 		return -2;
+	}
 	
+	printf ("hoge\n");
+
 	if (ans.n.nlmsg_type == NLMSG_ERROR) {
 		fprintf (stderr, "%s: nlmsg error\n", __func__);
 		return -EBADMSG;
@@ -577,6 +582,12 @@ do_show_locator (int argc, char ** argv)
 	if (rtnl_send (&genl_rth, &req, req.n.nlmsg_len) < 0)	
 		return -2;
 
+	printf ("Node id");
+	print_offset ("Node id", NODE_ID_OFFSET);
+	printf ("Locator address");
+	print_offset ("Locator address", ADDRESS_OFFSET);
+	printf ("Weight\n");
+
 	if (rtnl_dump_filter (&genl_rth, locator_nlmsg, NULL) < 0) {
 		fprintf (stderr, "Dump terminated\n");
 		exit (1);
@@ -599,7 +610,7 @@ do_show_node (int argc, char ** argv)
 
 	if (rtnl_dump_filter (&genl_rth, locator_nlmsg, NULL) < 0) {
 		fprintf (stderr, "Dump terminated\n");
-		exit (1);
+	exit (1);
 	}
 
 	return 0;

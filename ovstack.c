@@ -51,6 +51,7 @@ struct ovstack_recv_ops {
 /* Overlay Node */
 struct ov_node {
 	struct list_head	list;
+	struct list_head	chain;
 	struct rcu_head		rcu;
 	unsigned long 		update;
 
@@ -108,9 +109,12 @@ struct ov_locator {
 struct ovstack_net {
 	struct ov_node own_node;			/* self */
 	struct list_head node_list[LIB_HASH_SIZE];	/* node list hash */
+	struct list_head node_chain;			/* node chain */
 	struct socket * sock;				/* udp encap socket */
 };
 #define OVSTACK_NET_OWNNODE(ovnet) (&(ovnet->own_node))
+#define OVSTACK_NET_FIRSTNODE(ovnet)					\
+	(list_entry_rcu (ovnet->node_chain.next, struct ov_node, chain))
 
 
 /********************
@@ -162,6 +166,7 @@ static inline void
 ov_node_add (struct ovstack_net * ovnet, struct ov_node * node)
 {
 	list_add_rcu (&(node->list), node_head (ovnet, node->node_id));
+	list_add_rcu (&(node->chain), &(ovnet->node_chain));
 	return;
 }
 
@@ -169,6 +174,7 @@ static inline void
 ov_node_delete (struct ov_node * node) 
 {
 	list_del_rcu (&(node->list));
+	list_del_rcu (&(node->chain));
 	return;
 }
 
@@ -355,6 +361,7 @@ ovstack_init_net (struct net * net)
 	/* init lib */
 	for (n = 0; n < LIB_HASH_SIZE; n++) 
 		INIT_LIST_HEAD (&(ovnet->node_list[n]));
+	INIT_LIST_HEAD ((&ovnet->node_chain));
 
 	/* self node*/
 	memset (own, 0, sizeof (struct ov_node));
@@ -798,12 +805,16 @@ ovstack_nl_cmd_node_id_get (struct sk_buff * skb, struct genl_info * info)
 	int ret = -ENOBUFS;
 	void * hdr;
 	struct sk_buff * msg;
+	struct net * net;
 	struct ovstack_net * ovnet;
 
-	ovnet = net_generic (genl_info_net (info), ovstack_net_id);
+	net = genl_info_net (info);
+	ovnet = net_generic (net, ovstack_net_id);
 	msg = nlmsg_new (NLMSG_GOODSIZE, GFP_KERNEL);
-	if (msg)
+	if (msg) {
+		pr_debug ("%s: can not create nlmsg\n", __func__);
 		return -ENOMEM;
+	}
 	
 	hdr = genlmsg_put (msg, info->snd_pid, info->snd_seq,
 			   &ovstack_nl_family, NLM_F_ACK,
@@ -821,7 +832,7 @@ ovstack_nl_cmd_node_id_get (struct sk_buff * skb, struct genl_info * info)
 	if (ret < 0) 
 		goto err_out;
 	
-	return genlmsg_unicast (genl_info_net (info), msg, info->snd_pid);
+	return genlmsg_unicast (net, msg, info->snd_pid);
 
 err_out:
 	nlmsg_free (msg);
@@ -945,15 +956,17 @@ ovstack_nl_cmd_locator_dump (struct sk_buff * skb,
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ov_node * node = OVSTACK_NET_OWNNODE (ovnet);
 
-	for (;;) {
-		if (ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).pid,
-					  cb->nlh->nlmsg_seq, NLM_F_MULTI,
-					  OVSTACK_CMD_NODE_GET, node) <= 0)
-			goto out;
-	}
+	__be32 node_id = cb->args[1];
 
+	if (node_id != 0)
+		goto out;
+
+	ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).pid,
+			      cb->nlh->nlmsg_seq, NLM_F_MULTI,
+			      OVSTACK_CMD_NODE_GET, node);
+					  
 out:
-	cb->args[0] = node->node_id;
+	cb->args[1] = 1;
 	return skb->len;
 }
 
@@ -1001,23 +1014,31 @@ ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 {
 	struct net * net = sock_net (skb->sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ov_node * node = NULL;
-	__be32 node_id = cb->args[0];
+	struct ov_node * node;
+	__be32 node_id = cb->args[1];
+	
+	if (cb->args[2] == 1)
+		goto out;
 
-	for (;;) {
-		if (node == NULL) {
-			node = find_ov_node_by_id (ovnet, node_id);
-			if (node == NULL)
-				goto out;
-		}
-		if (ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).pid,
-					  cb->nlh->nlmsg_seq, NLM_F_MULTI,
-					  OVSTACK_CMD_NODE_GET, node) <= 0)
-			goto out;
+	if (node_id == 0) 
+		node = OVSTACK_NET_FIRSTNODE (ovnet);
+	else 
+		node = find_ov_node_by_id (ovnet, node_id);
+
+	if (node == NULL) 
+		goto out;
+
+	ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).pid,
+			      cb->nlh->nlmsg_seq, NLM_F_MULTI,
+			      OVSTACK_CMD_NODE_GET, node);
+	if (node->chain.next == NULL) {
+		cb->args[2] = 1;
+		goto out;
 	}
+	node = list_entry_rcu (node->chain.next, struct ov_node, chain);
+	cb->args[1] = node->node_id;
 
 out:
-	cb->args[0] = node_id;
 	return skb->len;
 }
 
