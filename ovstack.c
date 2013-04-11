@@ -34,9 +34,6 @@ MODULE_AUTHOR ("upa@haeena.net");
 #define VNI_HASH_SIZE	(1 << VNI_HASH_BITS)
 #define LIB_HASH_SIZE	(1 << LIB_HASH_BITS)
 
-#define LIB_WEIGHT_HASH_BITS	16
-#define LIB_WEIGHT_HASH_SIZE	(1 << LIB_WEIGHT_HASH_BITS)
-
 #define OVSTACK_DEFAULT_WEIGHT 50
 
 
@@ -103,6 +100,7 @@ struct ov_locator {
 #define remote_ip4	remote_ip.__loc_addr4
 #define remote_ip6	remote_ip.__loc_addr6
 };
+#define OV_LOCATOR_NODE_ID(loc) ((loc)->node->node_id)
 
 
 /* per network namespace structure */
@@ -211,7 +209,7 @@ find_ov_locator_by_addr (struct ov_node * node, __be32 * addr, u8 ai_family)
 }
 
 static struct ov_locator *
-find_locator_by_hash (struct ov_node * node, u32 hash, u8 ai_family)
+find_ov_locator_by_hash (struct ov_node * node, u32 hash, u8 ai_family)
 {
 	struct list_head * li;
 	struct ov_locator * loc;
@@ -399,6 +397,12 @@ ovstack_exit_net (struct net * net)
 	struct list_head *p, *tmp;
 	struct ov_node * node;
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+
+	/* destroy socket */
+	if (ovnet->sock) {
+		sk_release_kernel (ovnet->sock->sk);
+		ovnet->sock = NULL;
+	}
 
 	/* destroy lib */
 	for (n = 0; n < LIB_HASH_SIZE; n++) {
@@ -790,32 +794,230 @@ ovstack_nl_cmd_node_weight_set (struct sk_buff * skb, struct genl_info * info)
 static int
 ovstack_nl_cmd_node_id_get (struct sk_buff * skb, struct genl_info * info)
 {
+	int ret = -ENOBUFS;
+	void * hdr;
+	struct sk_buff * msg;
+	struct ovstack_net * ovnet;
+
+	ovnet = net_generic (genl_info_net (info), ovstack_net_id);
+	msg = nlmsg_new (NLMSG_GOODSIZE, GFP_KERNEL);
+	if (msg)
+		return -ENOMEM;
+	
+	hdr = genlmsg_put (msg, info->snd_pid, info->snd_seq,
+			   &ovstack_nl_family, NLM_F_ACK,
+			   OVSTACK_CMD_NODE_ID_GET);
+	if (IS_ERR (hdr)) 
+		PTR_ERR (hdr);
+
+	if (nla_put_be32 (msg, OVSTACK_ATTR_NODE_ID, 
+			  OVSTACK_NET_OWNNODE(ovnet)->node_id)) {
+		genlmsg_cancel (msg, hdr);
+		goto err_out;
+	}
+
+	ret = genlmsg_end (msg, hdr);
+	if (ret < 0) 
+		goto err_out;
+	
+	return genlmsg_unicast (genl_info_net (info), msg, info->snd_pid);
+
+err_out:
+	nlmsg_free (msg);
+	return ret;
+}
+
+static int
+ovstack_nl_locator_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
+			 int cmd, struct ov_locator * loc)
+{
+	void * hdr;
+	struct ov_node * node;
+
+	node = loc->node;
+	hdr = genlmsg_put (skb, pid, seq, &ovstack_nl_family, flags, cmd);
+
+	if (IS_ERR (hdr))
+		PTR_ERR (hdr);
+
+	if (nla_put_be32 (skb, OVSTACK_ATTR_NODE_ID, node->node_id) ||
+	    nla_put_u8 (skb, OVSTACK_ATTR_LOCATOR_WEIGHT, loc->weight))
+		goto err_out;
+
+	if (loc->remote_ip_family == AF_INET) {
+		if (nla_put_be32 (skb, OVSTACK_ATTR_LOCATOR_IP4ADDR,
+				  *(loc->remote_ip4))) 
+			goto err_out;
+	} else if (loc->remote_ip_family == AF_INET6) {
+		if (nla_put (skb, OVSTACK_ATTR_LOCATOR_IP6ADDR,
+			     sizeof (struct in6_addr), loc->remote_ip6))
+			goto err_out;
+	} else {
+		pr_debug ("%s: invalid locator ip family %d, node %pI4\n",
+			  __func__, loc->remote_ip_family, 
+			  &(OV_LOCATOR_NODE_ID (loc)));
+		goto err_out;
+	}
+
+	return genlmsg_end (skb, hdr);
+
+err_out:
+	genlmsg_cancel (skb, hdr);
+	return -1;
+}
+
+
+static int
+ovstack_nl_node_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
+			 int cmd, struct ov_node * node)
+{
+	struct ov_locator * loc;
+
+	list_for_each_entry_rcu (loc, &(node->ipv4_locator_list), list) 
+		ovstack_nl_locator_send (skb, pid, seq, flags, cmd, loc);
+
+	list_for_each_entry_rcu (loc, &(node->ipv6_locator_list), list) 
+		ovstack_nl_locator_send (skb, pid, seq, flags, cmd, loc);
+
 	return 0;
 }
 
 static int
 ovstack_nl_cmd_locator_get (struct sk_buff * skb, struct genl_info * info)
 {
-	return 0;
+	int ret;
+	u8 ai_family;
+	__be32 * addr = NULL;
+	struct in_addr addr4;
+	struct in6_addr addr6;
+	struct sk_buff * msg;
+	struct net * net;
+	struct ovstack_net * ovnet;
+	struct ov_locator * loc;
+
+	
+	if (info->attrs[OVSTACK_ATTR_LOCATOR_IP4ADDR]) {
+		ai_family = AF_INET;
+		addr = (__be32 *)&addr4;
+		addr4.s_addr = nla_get_be32 
+			(info->attrs[OVSTACK_ATTR_LOCATOR_IP4ADDR]);
+	}
+	if (info->attrs[OVSTACK_ATTR_LOCATOR_IP6ADDR]) {
+		ai_family = AF_INET6;
+		addr = (__be32 *)&addr6;
+		nla_memcpy (&addr6, info->attrs[OVSTACK_ATTR_LOCATOR_IP6ADDR],
+			    sizeof (addr6));
+	}
+	if (addr == NULL) {
+		pr_debug ("%s: ip address is not specified\n", __func__);
+		return -EINVAL;
+	}
+
+
+	net = genl_info_net (info);
+	ovnet = net_generic (net, ovstack_net_id);
+	loc = find_ov_locator_by_addr (OVSTACK_NET_OWNNODE (ovnet),
+				       addr, ai_family);
+	if (loc == NULL) 
+		return -ENOENT;
+
+	msg = nlmsg_new (NLMSG_GOODSIZE, GFP_KERNEL);
+	if (!msg) 
+		return -ENOMEM;
+
+	ret = ovstack_nl_locator_send (msg, info->snd_pid, info->snd_seq,
+				       NLM_F_ACK, OVSTACK_CMD_LOCATOR_GET,
+				       loc);
+	if (ret < 0) {
+		nlmsg_free (msg);
+		return ret;
+	}
+
+	return genlmsg_unicast (net, msg, info->snd_pid);
 }
 
 static int
 ovstack_nl_cmd_locator_dump (struct sk_buff * skb,
 			     struct netlink_callback * cb)
 {
-	return 0;
+	struct net * net = sock_net (skb->sk);
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ov_node * node = OVSTACK_NET_OWNNODE (ovnet);
+
+	for (;;) {
+		if (ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).pid,
+					  cb->nlh->nlmsg_seq, NLM_F_MULTI,
+					  OVSTACK_CMD_NODE_GET, node) <= 0)
+			goto out;
+	}
+
+out:
+	cb->args[0] = node->node_id;
+	return skb->len;
 }
+
 
 static int
 ovstack_nl_cmd_node_get (struct sk_buff * skb, struct genl_info * info)
 {
-	return 0;
+	int ret;
+	__be32 node_id;
+	struct net * net;
+	struct ovstack_net * ovnet;
+	struct ov_node * node;
+	struct sk_buff * msg;
+
+	if (!info->attrs[OVSTACK_ATTR_NODE_ID]) {
+		pr_debug ("%s: node id is not specified\n", __func__);
+		return -EINVAL;
+	}
+	node_id = nla_get_be32 (info->attrs[OVSTACK_ATTR_NODE_ID]);
+
+	net = genl_info_net (info);
+	ovnet = net_generic (net, ovstack_net_id);
+
+	node = find_ov_node_by_id (ovnet, node_id);
+	if (node == NULL) 
+		return -ENOENT;
+
+	msg = nlmsg_new (NLMSG_GOODSIZE, GFP_KERNEL);
+	if (!msg)
+		return -ENOMEM;
+
+	ret = ovstack_nl_node_send (msg, info->snd_pid, info->snd_seq, 
+				    NLM_F_ACK, OVSTACK_CMD_NODE_GET, node);
+
+	if (ret < 0) {
+		nlmsg_free (msg);
+		return ret;
+	}
+
+	return genlmsg_unicast (net, msg, info->snd_pid);
 }
 
 static int
 ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 {
-	return 0;
+	struct net * net = sock_net (skb->sk);
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ov_node * node = NULL;
+	__be32 node_id = cb->args[0];
+
+	for (;;) {
+		if (node == NULL) {
+			node = find_ov_node_by_id (ovnet, node_id);
+			if (node == NULL)
+				goto out;
+		}
+		if (ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).pid,
+					  cb->nlh->nlmsg_seq, NLM_F_MULTI,
+					  OVSTACK_CMD_NODE_GET, node) <= 0)
+			goto out;
+	}
+
+out:
+	cb->args[0] = node_id;
+	return skb->len;
 }
 
 static struct nla_policy ovstack_nl_policy[OVSTACK_ATTR_MAX + 1] = {
@@ -919,7 +1121,7 @@ ovstack_ipv4_src_loc (struct in_addr * addr, struct net * net, u32 hash)
 		return 0;
 	}
 
-	loc = find_locator_by_hash (OVSTACK_NET_OWNNODE (ovnet),
+	loc = find_ov_locator_by_hash (OVSTACK_NET_OWNNODE (ovnet),
 				    hash, AF_INET);
 	if (loc == NULL)
 		return 0;
@@ -944,7 +1146,7 @@ ovstack_ipv4_dst_loc (struct in_addr * addr,
 		return 0;
 	}
 
-	loc = find_locator_by_hash (node, hash, AF_INET);
+	loc = find_ov_locator_by_hash (node, hash, AF_INET);
 	if (loc == NULL)
 		return 0;
 	memcpy (addr, loc->remote_ip4, sizeof (struct in_addr));
@@ -964,7 +1166,7 @@ ovstack_ipv6_src_loc (struct in6_addr * addr, struct net * net, u32 hash)
 		return 0;
 	}
 
-	loc = find_locator_by_hash (OVSTACK_NET_OWNNODE (ovnet),
+	loc = find_ov_locator_by_hash (OVSTACK_NET_OWNNODE (ovnet),
 				    hash, AF_INET6);
 	if (loc == NULL)
 		return 0;
@@ -989,7 +1191,7 @@ ovstack_ipv6_dst_loc (struct in6_addr * addr,
 		return 0;
 	}
 
-	loc = find_locator_by_hash (node, hash, AF_INET6);
+	loc = find_ov_locator_by_hash (node, hash, AF_INET6);
 	if (loc == NULL)
 		return 0;
 	memcpy (addr, loc->remote_ip6, sizeof (struct in6_addr));

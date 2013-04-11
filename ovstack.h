@@ -39,9 +39,9 @@ struct ovhdr {
  * NODE_ADD		- node_id, remote_ip, weight : add new node 
  * NODE_DELETE		- node_id, rempte_ip : delete node (or it's locator)
  * NODE_WEIGHT_SET	- node_id, remote_ip, weight : set weight
- * NODE_ID_GET		- node_id : my node id info
- * LOCATOR_GET		- remote_ip, weight : my locator info
- * NODE_GET		- node_id, or dump : get (or dump) node
+ * NODE_ID_GET		- ret node_id : my node id info
+ * LOCATOR_GET		- ret remote_ip, weight : my locator info
+ * NODE_GET		- ret node_id, or dump : get (or dump) node
  */
 
 enum {
