@@ -12,6 +12,7 @@
 
 #define OVSTACK_TTL		128
 #define OVSTACK_PORT            60002
+#define OVSTACK_HEADER_VERSION	1
 
 
 /* overlay header */
@@ -40,16 +41,16 @@ int ovstack_ipv6_loc_count (struct net * net);
 /* return value : 
  * AF_INET = ipv4 address, AF_INET6 = ipv6 address, 0 = failed 
  */
-int ovstack_src_loc (__be32 * addr, struct net * net, u32 hash);
-int ovstack_dst_loc (__be32 * addr, struct net * net, 
+int ovstack_src_loc (void * addr, struct net * net, u32 hash);
+int ovstack_dst_loc (void * addr, struct net * net, 
 		     __be32 node_id, u32 hash);
 
-int ovstack_ipv4_src_loc (struct in_addr * addr, struct net * net, u32 hash);
-int ovstack_ipv4_dst_loc (struct in_addr * addr, struct net * net, 
+int ovstack_ipv4_src_loc (void * addr, struct net * net, u32 hash);
+int ovstack_ipv4_dst_loc (void * addr, struct net * net, 
 			  __be32 node_id, u32 hash);
 
-int ovstack_ipv6_src_loc (struct in6_addr * addr, struct net * net, u32 hash);
-int ovstack_ipv6_dst_loc (struct in6_addr * addr, struct net * net, 
+int ovstack_ipv6_src_loc (void * addr, struct net * net, u32 hash);
+int ovstack_ipv6_dst_loc (void * addr, struct net * net, 
 			  __be32 node_id, u32 hash);
 
 

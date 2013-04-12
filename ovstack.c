@@ -1158,7 +1158,7 @@ ovstack_ipv6_loc_count (struct net * net)
 EXPORT_SYMBOL (ovstack_ipv6_loc_count);
 
 int
-ovstack_src_loc (__be32 * addr, struct net * net, u32 hash)
+ovstack_src_loc (void * addr, struct net * net, u32 hash)
 {
 	struct ov_locator * loc;
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -1178,7 +1178,7 @@ ovstack_src_loc (__be32 * addr, struct net * net, u32 hash)
 EXPORT_SYMBOL (ovstack_src_loc);
 
 int
-ovstack_dst_loc (__be32 * addr, struct net * net, __be32 node_id, u32 hash)
+ovstack_dst_loc (void * addr, struct net * net, __be32 node_id, u32 hash)
 {
 	struct ov_node * node;
 	struct ov_locator * loc;
@@ -1201,7 +1201,7 @@ ovstack_dst_loc (__be32 * addr, struct net * net, __be32 node_id, u32 hash)
 EXPORT_SYMBOL (ovstack_dst_loc);
 
 int
-ovstack_ipv4_src_loc (struct in_addr * addr, struct net * net, u32 hash)
+ovstack_ipv4_src_loc (void * addr, struct net * net, u32 hash)
 {
 	struct ov_locator * loc;
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -1217,12 +1217,12 @@ ovstack_ipv4_src_loc (struct in_addr * addr, struct net * net, u32 hash)
 		return 0;
 	memcpy (addr, loc->remote_ip4, sizeof (struct in_addr));
 
-	return 1;
+	return AF_INET;
 }
 EXPORT_SYMBOL (ovstack_ipv4_src_loc);
 
 int
-ovstack_ipv4_dst_loc (struct in_addr * addr, 
+ovstack_ipv4_dst_loc (void * addr, 
 		      struct net * net, __be32 node_id, u32 hash)
 {
 	struct ov_node * node;
@@ -1241,12 +1241,12 @@ ovstack_ipv4_dst_loc (struct in_addr * addr,
 		return 0;
 	memcpy (addr, loc->remote_ip4, sizeof (struct in_addr));
 
-	return 1;
+	return AF_INET;
 }
 EXPORT_SYMBOL (ovstack_ipv4_dst_loc);
 
 int
-ovstack_ipv6_src_loc (struct in6_addr * addr, struct net * net, u32 hash)
+ovstack_ipv6_src_loc (void * addr, struct net * net, u32 hash)
 {
 	struct ov_locator * loc;
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -1262,12 +1262,12 @@ ovstack_ipv6_src_loc (struct in6_addr * addr, struct net * net, u32 hash)
 		return 0;
 	memcpy (addr, loc->remote_ip6, sizeof (struct in6_addr));
 
-	return 1;
+	return AF_INET6;
 }
 EXPORT_SYMBOL (ovstack_ipv6_src_loc);
 
 int
-ovstack_ipv6_dst_loc (struct in6_addr * addr, 
+ovstack_ipv6_dst_loc (void * addr, 
 		      struct net * net, __be32 node_id, u32 hash)
 {
 	struct ov_node * node;
@@ -1286,7 +1286,7 @@ ovstack_ipv6_dst_loc (struct in6_addr * addr,
 		return 0;
 	memcpy (addr, loc->remote_ip6, sizeof (struct in6_addr));
 
-	return 1;
+	return AF_INET6;
 }
 EXPORT_SYMBOL (ovstack_ipv6_dst_loc);
 

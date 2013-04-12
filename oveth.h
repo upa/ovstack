@@ -8,7 +8,6 @@
 
 /* overlay ethernet section */
 enum {
-	IFLA_OVETH_UNSPEC,
 	IFLA_OVETH_VNI,		/* 32bit number	(24bit)	*/
 	__IFLA_OVETH_MAX
 };
