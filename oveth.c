@@ -103,7 +103,7 @@ struct oveth_dev {
 };
 
 
-/* utirls */
+/* utils */
 static u32 eth_hash(const unsigned char *addr)
 {
 	/* from vxlan.c */
@@ -709,6 +709,8 @@ oveth_stats64 (struct net_device * dev, struct rtnl_link_stats64 * stats)
 }
 
 
+
+
 static const struct net_device_ops oveth_netdev_ops = {
 	.ndo_init		= oveth_init,
 	.ndo_open		= oveth_open,
@@ -718,9 +720,6 @@ static const struct net_device_ops oveth_netdev_ops = {
 	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,
-//	.ndo_fdb_add		= oveth_fdb_add,
-//	.ndo_fdb_del		= oveth_fdb_del,
-//	.ndo_fdb_dump		= oveth_fdb_dump,       
 };
 
 
@@ -853,6 +852,93 @@ static struct rtnl_link_ops oveth_link_ops __read_mostly = {
 	.get_size	= oveth_get_size,
 };
 
+
+
+/*************************************
+ *	generic netlink operations
+ *************************************/
+
+static int
+oveth_nl_cmd_route_add (struct sk_buff * skb, struct genl_info * info)
+{
+	__u32 vni;
+	__be32 node_id;
+	u8 mac[ETH_ALEN];
+	struct net * net = genl_info_net (info);
+	struct net_device * dev;
+	struct oveth_dev * oveth;
+	struct oveth_fdb * f;
+	struct oveth_fdb_node * fn;
+
+	if (!info->attrs[OVETH_ATTR_VNI] ||
+	    !info->attrs[OVETH_ATTR_NODE_ID] || 
+	    !info->attrs[OVETH_ATTR_MACADDR] ) {
+		return -EINVAL;
+	}
+	vni = nla_get_u32 (info->attrs[OVETH_ATTR_VNI]);
+	node_id = nla_get_be32 (info->attrs[OVETH_ATTR_NODE_ID]);
+	nla_memcpy (mac, info->attrs[OVETH_ATTR_MACADDR], ETH_ALEN);
+
+	
+
+	return 0;
+}
+
+static int
+oveth_nl_cmd_route_delete (struct sk_buff * skb, struct genl_info * info)
+{
+	return 0;
+}
+
+static int
+oveth_nl_cmd_fdb_get (struct sk_buff * skb, struct genl_info * info)
+{
+	return 0;
+}
+
+static int
+oveth_nl_cmd_fdb_dump (struct sk_buff * skb, struct netlink_callback * cb)
+{
+	return 0;
+}
+
+static struct genl_family oveth_nl_family = {
+	.id		= GENL_ID_GENERATE,
+	.name		= OVETH_GENL_NAME,
+	.version	= OVETH_GENL_VERSION,
+	.hdrsize	= 0,
+	.maxattr	= OVETH_ATTR_MAX,
+};
+
+static struct nla_policy oveth_nl_policy[OVETH_ATTR_MAX + 1] = {
+	[OVETH_ATTR_IFINDEX]	= { .type = NLA_U32, },
+	[OVETH_ATTR_NODE_ID]	= { .type = NLA_U32, },
+	[OVETH_ATTR_VNI]	= { .type = NLA_u32, },
+	[OVETH_ATTR_MACADDR]	= { .type = NLA_BINARY,
+				    .len = sizeof (struct in6_addr) },
+};
+
+static struct genl_ops oveth_nl_ops[] = {
+	{
+		.cmd = OVETH_CMD_ROUTE_ADD,
+		.doit = oveth_nl_cmd_route_add,
+		.policy = oveth_nl_policy,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = OVETH_CMD_ROUTE_DELETE,
+		.doit = oveth_nl_cmd_route_delete,
+		.policy = oveth_nl_policy,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = OVETH_CMD_FDB_GET,
+		.doit = oveth_nl_cmd_fdb_get,
+		.dump = oveth_nl_cmd_fdb_dump,
+		.policy = oveth_nl_policy,
+		/* anyone can show fdb entries  */
+	},
+};
 
 
 /*************************************

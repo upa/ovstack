@@ -23,20 +23,16 @@ enum {
 /*
  * Commands
  *
- * ROUTE_ADD			- ifindex, mac, node_id
- * ROUTE_DELETE			- ifindex, mac
- * OVETH_CMD_FDB_GET		- ifindex
- * OVETH_CMD_LIB_GET		-
- * OVETH_CMD_LOCATOR_GET	-
+ * ROUTE_ADD			- vni, mac, node_id
+ * ROUTE_DELETE			- vni, mac
+ * OVETH_CMD_FDB_GET		- vni
  *
  */
 
 enum {
-	OVETH_CMD_ROUTE_ADD,
-	OVETH_CMD_ROUTE_DELETE,
-	OVETH_CMD_FDB_GET,
-	OVETH_CMD_LIB_GET,
-	OVETH_CMD_LOCATOR_GET,
+	OVETH_CMD_ROUTE_ADD,		/* mac, node_id */
+	OVETH_CMD_ROUTE_DELETE,		/* mac, node_id */
+	OVETH_CMD_FDB_GET,		/* none */
 	__OVETH_CMD_MAX,
 };
 
@@ -46,15 +42,10 @@ enum {
  * ATTR types defined for OVETH
  */
 enum {
-	OVETH_ATTR_NONE,		/* no data */
 	OVETH_ATTR_IFINDEX,		/* 32bit interface index */
 	OVETH_ATTR_NODE_ID,		/* 32bit node id */
 	OVETH_ATTR_VNI,			/* 32bit vni  */
-	OVETH_ATTR_LOCATOR_IP4ADDR,	/* ipv4 address */
-	OVETH_ATTR_LOCATOR_IP6ADDR,	/* ipv6 address */
-	OVETH_ATTR_LOCATOR_WEIGHT,	/* 8bit weight */
 	OVETH_ATTR_MACADDR,		/* 48bit mac address */
-	OVETH_ATTR_END,			/* 8bit */
 	__OVETH_ATTR_MAX,
 };
 
