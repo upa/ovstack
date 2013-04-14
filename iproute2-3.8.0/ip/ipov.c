@@ -648,6 +648,10 @@ do_show (int argc, char ** argv)
 		return do_show_locator (argc - 1, argv + 1);
 	if (strcmp (*argv, "node") == 0) 
 		return do_show_node (argc - 1, argv + 1);
+	else {
+		fprintf (stderr, "unknwon command \"%s\".\n", *argv);
+		exit (-1);
+	}
 
 	return 0;
 }

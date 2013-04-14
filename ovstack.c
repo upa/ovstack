@@ -886,6 +886,9 @@ ovstack_nl_locator_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
 	void * hdr;
 	struct ov_node * node;
 
+	if (!skb || !loc) 
+		return -1;
+
 	node = loc->node;
 	hdr = genlmsg_put (skb, pid, seq, &ovstack_nl_family, flags, cmd);
 
@@ -924,6 +927,9 @@ ovstack_nl_node_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
 			 int cmd, struct ov_node * node)
 {
 	struct ov_locator * loc;
+
+	if (!node) 
+		return 0;
 
 	list_for_each_entry_rcu (loc, &(node->ipv4_locator_list), list) 
 		ovstack_nl_locator_send (skb, pid, seq, flags, cmd, loc);

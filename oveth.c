@@ -982,6 +982,9 @@ ovstack_nl_fdb_node_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
 {
 	void * hdr;
 	
+	if (!skb || !fn)
+		return -1;
+
 	hdr = genlmsg_put (skb, pid, seq, &oveth_nl_family, flags, cmd);
 
 	if (IS_ERR (hdr))
