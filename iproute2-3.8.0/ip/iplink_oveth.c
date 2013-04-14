@@ -22,38 +22,41 @@ static void explain (void)
 {
 	fprintf (stderr,
 		 "Usage: ... oveth vni VNI\n"
-		 "routing settings is configured by "
+		 "routing settings are configured by "
 		 "\"ip ov\" and \"ipv oveth\".\n"
 		);
 }
 
 static int 
 oveth_parse_opt (struct link_util * lu, int argc, char ** argv,
-		     struct nlmsghdr * n)
+		 struct nlmsghdr * n)
 {
 	__u32 vni;
 	int vni_flag = 0;
 
+
 	while (argc > 0) {
 		if (!matches (*argv, "help")) {
 			explain ();
-			return -1;
+			exit (-1);
 		} else if (!matches (*argv, "vni")) {
 			NEXT_ARG ();
-			vni = get_u32 (&vni, *argv, 0);
+			if (get_u32 (&vni, *argv, 0) ||
+			    vni >= 1u << 24)
+				invarg ("invalid vni", *argv);
 			vni_flag++;
 		} else {
 			fprintf (stderr, "oveth: unknown command \"%s\"\n",
 				 *argv);
-			return -1;
+			exit (-1);
 		}
 
 		argc--, argv++;
 	}
 
-	if (!vni_flag) {
+	if (vni_flag == 0) {
 		fprintf (stderr, "vni is not specified\n");
-		return -1;
+		exit (-1);
 	}
 
 	addattr32 (n, 1024, IFLA_OVETH_VNI, vni);

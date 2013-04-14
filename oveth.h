@@ -8,7 +8,9 @@
 
 /* overlay ethernet section */
 enum {
+	IFLA_OVETH_UNSEPC,	
 	IFLA_OVETH_VNI,		/* 32bit number	(24bit)	*/
+	IFLA_OVETH_TTL,		/* 8bit ttl	*/
 	__IFLA_OVETH_MAX
 };
 
@@ -24,8 +26,8 @@ enum {
  * Commands
  *
  * ROUTE_ADD			- vni, mac, node_id
- * ROUTE_DELETE			- vni, mac
- * OVETH_CMD_FDB_GET		- vni
+ * ROUTE_DELETE			- vni, mac, node_id
+ * OVETH_CMD_FDB_GET		- (vni?)
  *
  */
 

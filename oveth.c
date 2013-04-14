@@ -783,6 +783,7 @@ oveth_validate (struct nlattr * tb[], struct nlattr * data[])
 		if (vni >= VNI_MAX)
 			return -ERANGE;
 	}
+
 	return 0;
 }
 
@@ -795,8 +796,14 @@ oveth_newlink (struct net * net, struct net_device * dev,
 	struct oveth_dev * oveth = netdev_priv (dev);
 	struct oveth_net * ovnet = net_generic (net, oveth_net_id);
 
-	if (!data[IFLA_OVETH_VNI])
+	if (!data) {
+		pr_debug ("%s: nlattr data is null\n", __func__);
 		return -EINVAL;
+	}
+	if (!data[IFLA_OVETH_VNI]) {
+		pr_debug ("%s: nlatter data OVETH_VNI is null\n", __func__);
+		return -EINVAL;
+	}
 
 	vni = nla_get_u32 (data[IFLA_OVETH_VNI]);
 	if (find_oveth_by_vni (net, vni)) {
@@ -814,6 +821,8 @@ oveth_newlink (struct net * net, struct net_device * dev,
 		list_add_rcu (&(oveth->list), vni_head (net, oveth->vni));
 		list_add_rcu (&(oveth->chain), &(ovnet->vni_chain));
 	}
+
+	pr_debug ("newlink, vni is %u\n", vni);
 
 	return rc;
 }
@@ -840,12 +849,14 @@ static size_t
 oveth_get_size (const struct net_device * dev)
 {
 	return nla_total_size (sizeof (__u32)) +	/* IFLA_OVETH_VNI */
+		nla_total_size (sizeof (__u8)) + 	/* IFLA_OVETH_TTL */
 		0;
 }
 
 
 static const struct nla_policy oveth_policy[IFLA_OVETH_MAX + 1] = {
-	[IFLA_OVETH_VNI]	= { .type = NLA_U32 },
+	[IFLA_OVETH_VNI]	= { .type = NLA_U32, },
+	[IFLA_OVETH_TTL]	= { .type = NLA_U8, },
 };
 
 static struct rtnl_link_ops oveth_link_ops __read_mostly = {
@@ -1159,6 +1170,8 @@ module_init (oveth_init_module);
 static void
 __exit oveth_exit_module (void)
 {
+	ovstack_unregister_recv_ops (OVSTACK_PROTO_ETHER);
+	genl_unregister_family (&oveth_nl_family);
 	rtnl_link_unregister (&oveth_link_ops);
 	unregister_pernet_device (&oveth_net_ops);
 
