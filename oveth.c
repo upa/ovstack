@@ -55,6 +55,7 @@ struct oveth_fdb_node {
 	struct list_head	list;
 	struct rcu_head		rcu;
 	__be32			node_id;
+	struct oveth_fdb	* fdb;		/* parent */
 };
 
 struct oveth_fdb {
@@ -79,6 +80,7 @@ struct oveth_fdb {
 static unsigned int oveth_net_id;
 struct oveth_net {
 	struct list_head vni_list[VNI_HASH_SIZE];	/* oveth_dev table */
+	struct list_head vni_chain;			/* oveth_dev chain */
 };
 
 
@@ -94,6 +96,7 @@ struct oveth_stats {
 /* psuedo network device */
 struct oveth_dev {
 	struct list_head	list;
+	struct list_head	chain;
 	struct net_device	* dev;
 	struct oveth_stats	__percpu * stats;
 
@@ -224,6 +227,7 @@ oveth_fdb_add_node (struct oveth_fdb * f, __be32 node_id)
 	fn = kmalloc (sizeof (struct oveth_fdb_node), GFP_KERNEL);
 	memset (fn, 0, sizeof (struct oveth_fdb_node));
 	fn->node_id = node_id;
+	fn->fdb = f;
 	list_add_rcu (&(fn->list), &(f->node_id_list));
 	f->node_id_count++;
 	return;
@@ -236,6 +240,7 @@ oveth_fdb_del_node (struct oveth_fdb * f, __be32 node_id)
 	fn = oveth_fdb_find_node (f, node_id);
 	if (fn == NULL)
 		return;
+	fn->fdb = NULL;
 	list_del_rcu (&(fn->list));
 	f->node_id_count--;
 	return;
@@ -788,6 +793,7 @@ oveth_newlink (struct net * net, struct net_device * dev,
 	int n, rc;
 	__u32 vni;
 	struct oveth_dev * oveth = netdev_priv (dev);
+	struct oveth_net * ovnet = net_generic (net, oveth_net_id);
 
 	if (!data[IFLA_OVETH_VNI])
 		return -EINVAL;
@@ -804,8 +810,10 @@ oveth_newlink (struct net * net, struct net_device * dev,
 		INIT_LIST_HEAD (&(oveth->fdb_head[n]));
 
 	rc = register_netdevice (dev);
-	if (rc == 0)
+	if (rc == 0) {
 		list_add_rcu (&(oveth->list), vni_head (net, oveth->vni));
+		list_add_rcu (&(oveth->chain), &(ovnet->vni_chain));
+	}
 
 	return rc;
 }
@@ -858,6 +866,24 @@ static struct rtnl_link_ops oveth_link_ops __read_mostly = {
  *	generic netlink operations
  *************************************/
 
+
+static struct genl_family oveth_nl_family = {
+	.id		= GENL_ID_GENERATE,
+	.name		= OVETH_GENL_NAME,
+	.version	= OVETH_GENL_VERSION,
+	.hdrsize	= 0,
+	.maxattr	= OVETH_ATTR_MAX,
+};
+
+static struct nla_policy oveth_nl_policy[OVETH_ATTR_MAX + 1] = {
+	[OVETH_ATTR_IFINDEX]	= { .type = NLA_U32, },
+	[OVETH_ATTR_NODE_ID]	= { .type = NLA_U32, },
+	[OVETH_ATTR_VNI]	= { .type = NLA_U32, },
+	[OVETH_ATTR_MACADDR]	= { .type = NLA_BINARY,
+				    .len = sizeof (struct in6_addr) },
+};
+
+
 static int
 oveth_nl_cmd_route_add (struct sk_buff * skb, struct genl_info * info)
 {
@@ -865,7 +891,6 @@ oveth_nl_cmd_route_add (struct sk_buff * skb, struct genl_info * info)
 	__be32 node_id;
 	u8 mac[ETH_ALEN];
 	struct net * net = genl_info_net (info);
-	struct net_device * dev;
 	struct oveth_dev * oveth;
 	struct oveth_fdb * f;
 	struct oveth_fdb_node * fn;
@@ -879,7 +904,25 @@ oveth_nl_cmd_route_add (struct sk_buff * skb, struct genl_info * info)
 	node_id = nla_get_be32 (info->attrs[OVETH_ATTR_NODE_ID]);
 	nla_memcpy (mac, info->attrs[OVETH_ATTR_MACADDR], ETH_ALEN);
 
+	/* find device, and add entry */
+	oveth = find_oveth_by_vni (net, vni);
+	if (oveth == NULL) {
+		pr_debug ("vni %u does not exists\n", vni);
+		return -ENODEV;
+	}
+
+	f = find_oveth_fdb_by_mac (oveth, mac);
+	if (f == NULL) {
+		f = create_oveth_fdb (mac);
+		oveth_fdb_add (oveth, f);
+	}
 	
+	fn = oveth_fdb_find_node (f, node_id);
+	if (fn == NULL) {
+		oveth_fdb_add_node (f, node_id);
+	} else {
+		return -EEXIST;
+	}
 
 	return 0;
 }
@@ -887,7 +930,63 @@ oveth_nl_cmd_route_add (struct sk_buff * skb, struct genl_info * info)
 static int
 oveth_nl_cmd_route_delete (struct sk_buff * skb, struct genl_info * info)
 {
+	__u32 vni;
+	__be32 node_id;
+	u8 mac[ETH_ALEN];
+	struct net * net = genl_info_net (info);
+	struct oveth_dev * oveth;
+	struct oveth_fdb * f;
+	struct oveth_fdb_node * fn;
+
+	if (!info->attrs[OVETH_ATTR_VNI] ||
+	    !info->attrs[OVETH_ATTR_NODE_ID] || 
+	    !info->attrs[OVETH_ATTR_MACADDR] ) {
+		return -EINVAL;
+	}
+	vni = nla_get_u32 (info->attrs[OVETH_ATTR_VNI]);
+	node_id = nla_get_be32 (info->attrs[OVETH_ATTR_NODE_ID]);
+	nla_memcpy (mac, info->attrs[OVETH_ATTR_MACADDR], ETH_ALEN);
+
+	/* find device, and add entry */
+	oveth = find_oveth_by_vni (net, vni);
+	if (oveth == NULL) {
+		pr_debug ("vni %u does not exists\n", vni);
+		return -ENODEV;
+	}
+
+	if ((f = find_oveth_fdb_by_mac (oveth, mac)) == NULL) 
+		return -ENOENT;
+	
+	if ((fn = oveth_fdb_find_node (f, node_id)) == NULL) 
+		return -ENOENT;
+	 else 
+		oveth_fdb_del_node (f, node_id);
+
 	return 0;
+}
+
+static int
+ovstack_nl_fdb_node_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
+			  int cmd, u32 vni, struct oveth_fdb_node * fn)
+{
+	void * hdr;
+	
+	hdr = genlmsg_put (skb, pid, seq, &oveth_nl_family, flags, cmd);
+
+	if (IS_ERR (hdr))
+		PTR_ERR (hdr);
+
+	if (nla_put_u32 (skb, OVETH_ATTR_VNI, vni) ||
+	    nla_put_be32 (skb, OVETH_ATTR_NODE_ID, fn->node_id) ||
+	    nla_put (skb, OVETH_ATTR_MACADDR, ETH_ALEN, fn->fdb->eth_addr)) {
+		goto err_out;
+	}
+
+	return genlmsg_end (skb, hdr);
+
+err_out:
+	genlmsg_cancel (skb, hdr);
+	return -1;
 }
 
 static int
@@ -896,27 +995,63 @@ oveth_nl_cmd_fdb_get (struct sk_buff * skb, struct genl_info * info)
 	return 0;
 }
 
+
 static int
 oveth_nl_cmd_fdb_dump (struct sk_buff * skb, struct netlink_callback * cb)
 {
-	return 0;
+	int idx = 0;
+	__u32 vni;
+	struct net * net = sock_net (skb->sk);
+	struct oveth_net * ovnet = net_generic (net, oveth_net_id);
+	struct oveth_dev * oveth, * oveth_next;
+	struct oveth_fdb * f;
+	struct oveth_fdb_node * fn;
+
+	/*
+	 * cb->args[0] = VNI, cb->args[1] = number of fdb
+	 */
+
+	vni = cb->args[0];
+	if (vni == 0xFFFFFFFF) 
+		goto out;
+	
+	oveth = find_oveth_by_vni (net, vni);
+	if (oveth == NULL)
+		goto out;
+	
+	list_for_each_entry_rcu (f, &(oveth->fdb_chain), chain) {
+		if (idx != cb->args[1]) 
+			goto skip;
+
+		list_for_each_entry_rcu (fn, &(f->node_id_list), list) {
+			ovstack_nl_fdb_node_send (skb, 
+						  NETLINK_CB (cb->skb).pid,
+						  cb->nlh->nlmsg_seq,
+						  NLM_F_MULTI,
+						  OVETH_CMD_FDB_GET,
+						  vni, fn);
+		}
+		break;
+skip:
+		idx++;
+	}
+
+	/* set next vni to cb->args[0] */
+	if (idx != cb->args[1]) {
+		if (oveth->chain.next == &(ovnet->vni_chain)) 
+			cb->args[0] = 0xFFFFFFFF;
+		else {
+			oveth_next = list_entry (oveth->chain.next, 
+						 struct oveth_dev, chain);
+			cb->args[0] = oveth_next->vni;
+		}	
+	}
+
+	cb->args[1] = idx + 1;
+
+out:
+	return skb->len;
 }
-
-static struct genl_family oveth_nl_family = {
-	.id		= GENL_ID_GENERATE,
-	.name		= OVETH_GENL_NAME,
-	.version	= OVETH_GENL_VERSION,
-	.hdrsize	= 0,
-	.maxattr	= OVETH_ATTR_MAX,
-};
-
-static struct nla_policy oveth_nl_policy[OVETH_ATTR_MAX + 1] = {
-	[OVETH_ATTR_IFINDEX]	= { .type = NLA_U32, },
-	[OVETH_ATTR_NODE_ID]	= { .type = NLA_U32, },
-	[OVETH_ATTR_VNI]	= { .type = NLA_u32, },
-	[OVETH_ATTR_MACADDR]	= { .type = NLA_BINARY,
-				    .len = sizeof (struct in6_addr) },
-};
 
 static struct genl_ops oveth_nl_ops[] = {
 	{
@@ -934,7 +1069,7 @@ static struct genl_ops oveth_nl_ops[] = {
 	{
 		.cmd = OVETH_CMD_FDB_GET,
 		.doit = oveth_nl_cmd_fdb_get,
-		.dump = oveth_nl_cmd_fdb_dump,
+		.dumpit = oveth_nl_cmd_fdb_dump,
 		.policy = oveth_nl_policy,
 		/* anyone can show fdb entries  */
 	},
@@ -956,6 +1091,7 @@ oveth_init_net (struct net * net)
 	/* init vni list */
 	for (n = 0; n < VNI_HASH_SIZE; n++) 
 		INIT_LIST_HEAD (&(ovnet->vni_list[n]));
+	INIT_LIST_HEAD (&(ovnet->vni_chain));
 
 	return 0;
 }
@@ -996,6 +1132,15 @@ __init oveth_init_module (void)
 	rc = rtnl_link_register (&oveth_link_ops);
 	if (rc != 0) {
 		unregister_pernet_device (&oveth_net_ops);
+		return rc;
+	}
+
+	rc = genl_register_family_with_ops (&oveth_nl_family,
+					    oveth_nl_ops,
+					    ARRAY_SIZE (oveth_nl_ops));
+	if (rc != 0) {
+		unregister_pernet_device (&oveth_net_ops);
+		rtnl_link_unregister (&oveth_link_ops);
 		return rc;
 	}
 

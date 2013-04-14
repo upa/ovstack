@@ -30,9 +30,9 @@ enum {
  */
 
 enum {
-	OVETH_CMD_ROUTE_ADD,		/* mac, node_id */
-	OVETH_CMD_ROUTE_DELETE,		/* mac, node_id */
-	OVETH_CMD_FDB_GET,		/* none */
+	OVETH_CMD_ROUTE_ADD,		/* mac, vni, node_id */
+	OVETH_CMD_ROUTE_DELETE,		/* mac, vni, node_id */
+	OVETH_CMD_FDB_GET,		/* none : vni, mac, node_id */
 	__OVETH_CMD_MAX,
 };
 
