@@ -564,6 +564,7 @@ __oveth_xmit (struct sk_buff * skb, struct net_device * dev, u8 ttl)
 			dev->stats.tx_aborted_errors++;
 		}
 	}
+	dev_kfree_skb (skb);
 
 	return NETDEV_TX_OK;
 }
