@@ -557,7 +557,12 @@ __oveth_xmit (struct sk_buff * skb, struct net_device * dev, u8 ttl)
 
 	list_for_each_entry_rcu (fn, &(f->node_id_list), list) {
 		mskb = skb_clone (skb, GFP_ATOMIC);
-		__oveth_xmit_to_node (mskb, dev, fn->node_id, ttl);
+		if (likely (mskb))
+			__oveth_xmit_to_node (mskb, dev, fn->node_id, ttl);
+		else {
+			dev->stats.tx_errors++;
+			dev->stats.tx_aborted_errors++;
+		}
 	}
 
 	return NETDEV_TX_OK;
