@@ -846,6 +846,39 @@ err_out:
 	return ret;
 }
 
+
+static int
+ovstack_nl_cmd_node_id_dump (struct sk_buff * skb, 
+			     struct netlink_callback * cb)
+{
+	void * hdr;
+	struct net * net = sock_net (skb->sk);
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ov_node * node = OVSTACK_NET_OWNNODE (ovnet);
+
+	if (cb->args[0] == 1)
+		goto out;
+
+	hdr = genlmsg_put (skb, NETLINK_CB (cb->skb).pid, cb->nlh->nlmsg_seq,
+			   &ovstack_nl_family, NLM_F_MULTI, 
+			   OVSTACK_CMD_NODE_GET);
+	if (IS_ERR (hdr))
+		PTR_ERR (hdr);
+
+	if (nla_put_be32 (skb, OVSTACK_ATTR_NODE_ID, node->node_id)) {
+		genlmsg_cancel (skb, hdr);
+		nlmsg_free (skb);
+		return -ENOMEM;
+	}
+	
+	genlmsg_end (skb, hdr);
+
+	cb->args[0] = 1;
+
+out:
+	return skb->len;
+}
+
 static int
 ovstack_nl_locator_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
 			 int cmd, struct ov_locator * loc)
@@ -1106,6 +1139,7 @@ static struct genl_ops ovstack_nl_ops[] = {
 	{
 		.cmd = OVSTACK_CMD_NODE_ID_GET,
 		.doit = ovstack_nl_cmd_node_id_get,
+		.dumpit = ovstack_nl_cmd_node_id_dump,
 		.policy = ovstack_nl_policy,
 	},
 	{

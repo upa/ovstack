@@ -525,49 +525,59 @@ locator_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 }
 
 static int
-do_show_id (int argc, char ** argv)
+id_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 {
 	int len;
-	char addrbuf4[16];
 	__u32 node_id;
+	char addrbuf4[16];
 	struct genlmsghdr * ghdr;
 	struct rtattr * attrs[OVSTACK_ATTR_MAX + 1];
 
-	GENL_REQUEST (ans, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
-		      OVSTACK_CMD_NODE_ID_GET, NLM_F_REQUEST);
-
-	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
-		      OVSTACK_CMD_NODE_ID_GET, NLM_F_REQUEST);
-
-	int ret;
-	if ((ret = rtnl_talk (&genl_rth, &req.n, 0, 0, &ans.n)) < 0) {
-		printf ("%d\n", ret);
-		return -2;
-	}
-	
-	if (ans.n.nlmsg_type == NLMSG_ERROR) {
-		fprintf (stderr, "%s: nlmsg error\n", __func__);
+	if (n->nlmsg_type == NLMSG_ERROR) {
+		fprintf (stderr, "%s: nlmsg_error\n", __func__);
 		return -EBADMSG;
 	}
 
-	ghdr = NLMSG_DATA (&(ans.n));
-	len = ans.n.nlmsg_len - NLMSG_LENGTH (sizeof (*ghdr));
+	ghdr = NLMSG_DATA (n);
+	len = n->nlmsg_len - NLMSG_LENGTH (sizeof (*ghdr));
 	if (len < 0) {
 		fprintf (stderr, "%s: nlmsg length error\n", __func__);
 		return -1;
 	}
-	
+
 	parse_rtattr (attrs, OVSTACK_ATTR_MAX, 
-		      (void *)ghdr + GENL_HDRLEN, len);
+		      (void *) ghdr + GENL_HDRLEN, len);
 
 	if (!attrs[OVSTACK_ATTR_NODE_ID]) {
-		fprintf (stderr, "%s: node id is not conatined\n", __func__);
+		fprintf (stderr, "%s: empty node id\n", __func__);
 		return -1;
 	}
-	node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_NODE_ID]);
 
+	node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_NODE_ID]);
 	inet_ntop (AF_INET, &node_id, addrbuf4, sizeof (addrbuf4));
+
 	printf ("%s\n", addrbuf4);
+
+	return 0;
+}
+
+static int
+do_show_id (int argc, char ** argv)
+{
+	int ret;
+
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_NODE_ID_GET, NLM_F_REQUEST | NLM_F_ROOT);
+
+	if ((ret = rtnl_send (&genl_rth, &req.n, req.n.nlmsg_len)) < 0) {
+		printf ("%d\n", ret);
+		return -2;
+	}
+	
+	if (rtnl_dump_filter (&genl_rth, id_nlmsg, NULL) < 0) {
+		fprintf (stderr, "Dump terminated\n");
+		exit (1);
+	}
 
 	return 0;
 }
