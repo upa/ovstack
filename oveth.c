@@ -355,7 +355,7 @@ oveth_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
 	iph->daddr	= *((__be32 *)(daddr));
 	iph->ttl	= 16;
 
-//	oveth_set_owner (dev, skb);
+	ovstack_set_owner (dev_net (dev), skb);
 
 	skb->ip_summed = CHECKSUM_NONE;
 	skb->pkt_type = PACKET_HOST;
@@ -459,7 +459,8 @@ oveth_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
 	ip6h->saddr             = *saddr;
 	ip6h->hop_limit         = 16;
 
-//	oveth_set_owner (dev, skb);
+
+	ovstack_set_owner (dev_net (dev), skb);
 
 	skb->pkt_type = PACKET_HOST;
 
@@ -536,6 +537,7 @@ error_drop:
 static inline netdev_tx_t
 __oveth_xmit (struct sk_buff * skb, struct net_device * dev, u8 ttl)
 {
+	struct sk_buff * mskb;
 	struct ethhdr * eth;
 	struct oveth_fdb * f;
 	struct oveth_fdb_node * fn;
@@ -554,7 +556,8 @@ __oveth_xmit (struct sk_buff * skb, struct net_device * dev, u8 ttl)
 	}
 
 	list_for_each_entry_rcu (fn, &(f->node_id_list), list) {
-		__oveth_xmit_to_node (skb, dev, fn->node_id, ttl);
+		mskb = skb_clone (skb, GFP_ATOMIC);
+		__oveth_xmit_to_node (mskb, dev, fn->node_id, ttl);
 	}
 
 	return NETDEV_TX_OK;

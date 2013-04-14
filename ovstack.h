@@ -58,7 +58,7 @@ int ovstack_register_recv_ops (int protocol, int (* proto_recv_ops)
 			       (struct sock * sk, struct sk_buff * skb));
 int ovstack_unregister_recv_ops (int protocol);
 
-
+void ovstack_set_owner (struct net * net, struct sk_buff * skb);
 
 
 

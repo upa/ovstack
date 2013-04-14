@@ -1360,6 +1360,25 @@ ovstack_unregister_recv_ops (int protocol)
 EXPORT_SYMBOL (ovstack_unregister_recv_ops);
 
 
+void
+ovstack_sock_free (struct sk_buff * skb)
+{
+	sock_put (skb->sk);
+}
+EXPORT_SYMBOL (ovstack_sock_free);
+
+void
+ovstack_set_owner (struct net * net, struct sk_buff * skb)
+{
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct sock * sk = ovnet->sock->sk;
+
+	skb_orphan (skb);
+	sock_hold (sk);
+	skb->sk = sk;
+	skb->destructor = ovstack_sock_free;
+}
+EXPORT_SYMBOL (ovstack_set_owner);
 
 /*****************************
  *	init/exit module
