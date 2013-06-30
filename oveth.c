@@ -1048,7 +1048,7 @@ oveth_nl_cmd_fdb_dump (struct sk_buff * skb, struct netlink_callback * cb)
 
 		list_for_each_entry_rcu (fn, &(f->node_id_list), list) {
 			ovstack_nl_fdb_node_send (skb, 
-						  NETLINK_CB (cb->skb).pid,
+						  NETLINK_CB (cb->skb).portid,
 						  cb->nlh->nlmsg_seq,
 						  NLM_F_MULTI,
 						  OVETH_CMD_FDB_GET,

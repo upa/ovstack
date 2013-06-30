@@ -823,7 +823,7 @@ ovstack_nl_cmd_node_id_get (struct sk_buff * skb, struct genl_info * info)
 		return -ENOMEM;
 	}
 	
-	hdr = genlmsg_put (msg, info->snd_pid, info->snd_seq,
+	hdr = genlmsg_put (msg, info->snd_portid, info->snd_seq,
 			   &ovstack_nl_family, NLM_F_ACK,
 			   OVSTACK_CMD_NODE_ID_GET);
 	if (IS_ERR (hdr)) 
@@ -839,7 +839,7 @@ ovstack_nl_cmd_node_id_get (struct sk_buff * skb, struct genl_info * info)
 	if (ret < 0) 
 		goto err_out;
 	
-	return genlmsg_unicast (net, msg, info->snd_pid);
+	return genlmsg_unicast (net, msg, info->snd_portid);
 
 err_out:
 	nlmsg_free (msg);
@@ -859,7 +859,8 @@ ovstack_nl_cmd_node_id_dump (struct sk_buff * skb,
 	if (cb->args[0] == 1)
 		goto out;
 
-	hdr = genlmsg_put (skb, NETLINK_CB (cb->skb).pid, cb->nlh->nlmsg_seq,
+	hdr = genlmsg_put (skb, NETLINK_CB (cb->skb).portid, 
+			   cb->nlh->nlmsg_seq,
 			   &ovstack_nl_family, NLM_F_MULTI, 
 			   OVSTACK_CMD_NODE_GET);
 	if (IS_ERR (hdr))
@@ -983,7 +984,7 @@ ovstack_nl_cmd_locator_get (struct sk_buff * skb, struct genl_info * info)
 	if (!msg) 
 		return -ENOMEM;
 
-	ret = ovstack_nl_locator_send (msg, info->snd_pid, info->snd_seq,
+	ret = ovstack_nl_locator_send (msg, info->snd_portid, info->snd_seq,
 				       NLM_F_ACK, OVSTACK_CMD_LOCATOR_GET,
 				       loc);
 	if (ret < 0) {
@@ -991,7 +992,7 @@ ovstack_nl_cmd_locator_get (struct sk_buff * skb, struct genl_info * info)
 		return ret;
 	}
 
-	return genlmsg_unicast (net, msg, info->snd_pid);
+	return genlmsg_unicast (net, msg, info->snd_portid);
 }
 
 static int
@@ -1007,7 +1008,7 @@ ovstack_nl_cmd_locator_dump (struct sk_buff * skb,
 	if (node_id != 0)
 		goto out;
 
-	ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).pid,
+	ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).portid,
 			      cb->nlh->nlmsg_seq, NLM_F_MULTI,
 			      OVSTACK_CMD_NODE_GET, node);
 					  
@@ -1044,7 +1045,7 @@ ovstack_nl_cmd_node_get (struct sk_buff * skb, struct genl_info * info)
 	if (!msg)
 		return -ENOMEM;
 
-	ret = ovstack_nl_node_send (msg, info->snd_pid, info->snd_seq, 
+	ret = ovstack_nl_node_send (msg, info->snd_portid, info->snd_seq, 
 				    NLM_F_ACK, OVSTACK_CMD_NODE_GET, node);
 
 	if (ret < 0) {
@@ -1052,7 +1053,7 @@ ovstack_nl_cmd_node_get (struct sk_buff * skb, struct genl_info * info)
 		return ret;
 	}
 
-	return genlmsg_unicast (net, msg, info->snd_pid);
+	return genlmsg_unicast (net, msg, info->snd_portid);
 }
 
 static int
@@ -1075,7 +1076,7 @@ ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 	if (node == NULL) 
 		goto out;
 
-	ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).pid,
+	ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).portid,
 			      cb->nlh->nlmsg_seq, NLM_F_MULTI,
 			      OVSTACK_CMD_NODE_GET, node);
 
