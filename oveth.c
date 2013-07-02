@@ -589,7 +589,7 @@ oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	/* outer udp header is already removed by ovstack */
 
 	ovh = (struct ovhdr *) skb->data;
-	vni = ntohl (ovh->ov_vni) >> 9;
+	vni = ntohl (ovh->ov_vni) >> 8;
 	net = sock_net (sk);
 	oveth = find_oveth_by_vni (net, vni);
 
@@ -606,7 +606,9 @@ oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 		return 0;
 	}
 
-	/* destination node check. routing */
+	/* if destination node is not my node id, packet is forwarded.
+	   This process ought to be done in ovstack layer.
+	 */
 	node_id = ovstack_own_node_id (net);
 	if (ovh->ov_dst != node_id) {
 		__oveth_xmit (skb, oveth->dev, ovh->ov_ttl - 1);
