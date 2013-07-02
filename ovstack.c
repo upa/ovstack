@@ -28,12 +28,9 @@ MODULE_LICENSE ("GPL");
 MODULE_AUTHOR ("upa@haeena.net");
 
 
-#define VNI_MAX		0x00FFFFFF
-#define VNI_HASH_BITS	8
 #define LIB_HASH_BITS	8
 #define ORT_HASH_BITS	8
 
-#define VNI_HASH_SIZE	(1 << VNI_HASH_BITS)
 #define LIB_HASH_SIZE	(1 << LIB_HASH_BITS)
 #define ORT_HASH_SIZE	(1 << ORT_HASH_BITS)
 
@@ -363,12 +360,12 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	 * call function pointer according to ovstack protocl number
 	 */
 
-	__u8 hash;
+	__be32 hash;
 	struct ovhdr * ovh;
 	struct net * net = sock_net (skb->sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ovstack_app * ovapp;
-	struct ov_node * node;
+	struct ov_node * ownnode;
 
 	/* pop off outer UDP header */
 	__skb_pull (skb, sizeof (struct udphdr));
@@ -380,7 +377,7 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	}
 
 	ovh = (struct ovhdr *) skb->data;
-	hash = ovh_hash (ovh);
+	hash = ovh->ov_hash;
 
 	/* application check */
 	if (!OVSTACK_NET_APP (ovnet, ovh->ov_app)) {
@@ -389,14 +386,14 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 		return 0;
 	}
 	ovapp = OVSTACK_NET_APP (ovnet, ovh->ov_app);
-	node = OVSTACK_APP_OWNNODE (ovapp);
+	ownnode = OVSTACK_APP_OWNNODE (ovapp);
 
 	/* this packet is not for me. routing ! */
-	if (ovh->ov_dst != node->node_id) {
+	if (ovh->ov_dst != ownnode->node_id) {
 		/* xmit ! */
 	}
 
-	/* call function per ov proto */
+	/* callback function for overlay applicaitons */
 	if (unlikely (ovapp->app_recv_ops == NULL)) {
 		pr_debug ("%s: unknwon application number %d\n", 
 			  __func__, ovh->ov_app);
@@ -1277,7 +1274,7 @@ static struct nla_policy ovstack_nl_policy[OVSTACK_ATTR_MAX + 1] = {
 	[OVSTACK_ATTR_APP_ID]		= { .type = NLA_U8 },
 	[OVSTACK_ATTR_LOCATOR_IP4ADDR]	= { .type = NLA_U32, },
 	[OVSTACK_ATTR_LOCATOR_IP6ADDR]	= { .type = NLA_BINARY,
-					    .len = sizeof (struct in6_addr)},
+					    .len = sizeof (struct in6_addr) },
 	[OVSTACK_ATTR_LOCATOR_WEIGHT]	= { .type = NLA_U8, },
 };
 
