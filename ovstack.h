@@ -49,34 +49,13 @@ struct ovhdr {
  */
 
 __be32 ovstack_own_node_id (struct net * net, u8 app);
-
-
-int ovstack_ipv4_loc_count (struct net * net, u8 app);
-int ovstack_ipv6_loc_count (struct net * net, u8 app);
-
-/* return value : 
- * AF_INET = ipv4 address, AF_INET6 = ipv6 address, 0 = failed 
- */
-int ovstack_src_loc (void * addr, struct net * net, u8 app, u32 hash);
-int ovstack_dst_loc (void * addr, struct net * net, u8 app,
-		     __be32 node_id, u32 hash);
-
-int ovstack_ipv4_src_loc (void * addr, struct net * net, u8 app, u32 hash);
-int ovstack_ipv4_dst_loc (void * addr, struct net * net, u8 app,
-			  __be32 node_id, u32 hash);
-
-int ovstack_ipv6_src_loc (void * addr, struct net * net, u8 app, u32 hash);
-int ovstack_ipv6_dst_loc (void * addr, struct net * net, u8 app,
-			  __be32 node_id, u32 hash);
-
-
-int ovstack_register_app_ops (struct net * net, int app, int (* proto_recv_ops)
-			      (struct sock * sk, struct sk_buff * skb));
+int ovstack_resgister_app_ops (struct net * net, int app, int (*app_recv_ops)
+			       (struct sock * sk, struct sk_buff * skb));
 int ovstack_unregister_app_ops (struct net * net, int app);
 
-void ovstack_set_owner (struct net * net, struct sk_buff * skb);
+netdev_tx_t ovstack_xmit (struct sk_buff * skb, struct net_device * dev);
 
-int ovstack_xmit (struct sk_buff * skb, struct net_device * dev);
+
 
 
 #endif /* _LINUX_OVSTACK_ */

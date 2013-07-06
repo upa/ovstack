@@ -355,6 +355,208 @@ ov_locator_weight_set (struct ov_locator * loc, u8 weight)
 }
 
 
+/***************************
+ *** xmit related locator operations
+ ***************************/
+
+void
+ovstack_sock_free (struct sk_buff * skb)
+{
+	sock_put (skb->sk);
+}
+
+void
+ovstack_set_owner (struct net * net, struct sk_buff * skb)
+{
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct sock * sk = ovnet->sock->sk;
+
+	skb_orphan (skb);
+	sock_hold (sk);
+	skb->sk = sk;
+	skb->destructor = ovstack_sock_free;
+}
+
+int
+ovstack_ipv4_loc_count (struct net * net, u8 app)
+{
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	if (unlikely (!ovapp)) {
+		pr_debug ("%s: application %d does not exist", __func__, app);
+		return 0;
+	}
+	return OVSTACK_APP_OWNNODE(ovapp)->ipv4_locator_count;
+}
+
+int
+ovstack_ipv6_loc_count (struct net * net, u8 app)
+{
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	if (unlikely (!ovapp)) {
+		pr_debug ("%s: application %d does not exist", __func__, app);
+		return 0;
+	}
+	return OVSTACK_APP_OWNNODE(ovapp)->ipv6_locator_count;
+}
+
+int
+ovstack_src_loc (void * addr, struct net * net, u8 app, u32 hash)
+{
+	struct ov_locator * loc;
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	if (unlikely (!ovapp)) {
+		pr_debug ("%s: application %d does not exist", __func__, app);
+		return 0;
+	}
+
+	loc = find_ov_locator_by_hash (OVSTACK_APP_OWNNODE (ovapp),
+				       hash, AF_UNSPEC);
+	if (loc == NULL)
+		return 0;
+
+	memcpy (addr, &(loc->remote_ip),
+		(loc->remote_ip_family == AF_INET) ?
+		sizeof (struct in_addr) : sizeof (struct in6_addr));
+
+	return loc->remote_ip_family;
+}
+
+int
+ovstack_dst_loc (void * addr, struct net * net, u8 app, 
+		 __be32 node_id, u32 hash)
+{
+	struct ov_node * node;
+	struct ov_locator * loc;
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	if (unlikely (!ovapp)) {
+		pr_debug ("%s: application %d does not exist", __func__, app);
+		return 0;
+	}
+
+	node = find_ov_node_by_id (ovapp, node_id);
+	if (!node)
+		return 0;
+
+	loc = find_ov_locator_by_hash (node, hash, AF_UNSPEC);
+	if (loc == NULL)
+		return 0;
+
+	memcpy (addr, &(loc->remote_ip),
+		(loc->remote_ip_family == AF_INET) ?
+		sizeof (struct in_addr) : sizeof (struct in6_addr));
+
+	return loc->remote_ip_family;
+}
+
+int
+ovstack_ipv4_src_loc (void * addr, struct net * net, u8 app, u32 hash)
+{
+	struct ov_locator * loc;
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	if (unlikely (!ovapp)) {
+		pr_debug ("%s: application %d does not exist", __func__, app);
+		return 0;
+	}
+
+	loc = find_ov_locator_by_hash (OVSTACK_APP_OWNNODE (ovapp),
+				       hash, AF_INET);
+	if (loc == NULL)
+		return 0;
+	memcpy (addr, loc->remote_ip4, sizeof (struct in_addr));
+
+	return AF_INET;
+}
+
+int
+ovstack_ipv4_dst_loc (void * addr, 
+		      struct net * net, u8 app, __be32 node_id, u32 hash)
+{
+	struct ov_node * node;
+	struct ov_locator * loc;
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	if (unlikely (!ovapp)) {
+		pr_debug ("%s: application %d does not exist", __func__, app);
+		return 0;
+	}
+
+	node = find_ov_node_by_id (ovapp, node_id);
+	if (unlikely (!node)) {
+		pr_debug ("%s: node id %pI4 does not exist\n", 
+			  __func__,  &node_id);
+		return 0;
+	}
+
+	loc = find_ov_locator_by_hash (node, hash, AF_INET);
+	if (loc == NULL)
+		return 0;
+	memcpy (addr, loc->remote_ip4, sizeof (struct in_addr));
+
+	return AF_INET;
+}
+
+int
+ovstack_ipv6_src_loc (void * addr, struct net * net, u8 app, u32 hash)
+{
+	struct ov_locator * loc;
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	if (unlikely (!ovapp)) {
+		pr_debug ("%s: application %d does not exist", __func__, app);
+		return 0;
+	}
+
+	loc = find_ov_locator_by_hash (OVSTACK_APP_OWNNODE (ovapp),
+				       hash, AF_INET6);
+	if (loc == NULL)
+		return 0;
+	memcpy (addr, loc->remote_ip6, sizeof (struct in6_addr));
+
+	return AF_INET6;
+}
+
+int
+ovstack_ipv6_dst_loc (void * addr, 
+		      struct net * net, u8 app, __be32 node_id, u32 hash)
+{
+	struct ov_node * node;
+	struct ov_locator * loc;
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	if (unlikely (!ovapp)) {
+		pr_debug ("%s: application %d does not exist", __func__, app);
+		return 0;
+	}
+
+	node = find_ov_node_by_id (ovapp, node_id);
+	if (unlikely (!node)) {
+		pr_debug ("%s: node id %pI4 does not exist\n", 
+			  __func__, &node_id);
+		return 0;
+	}
+
+	loc = find_ov_locator_by_hash (node, hash, AF_INET6);
+	if (loc == NULL)
+		return 0;
+	memcpy (addr, loc->remote_ip6, sizeof (struct in6_addr));
+
+	return AF_INET6;
+}
+
+
 /*****************************
  ****	Routing table operations
  *****************************/
@@ -1715,192 +1917,6 @@ ovstack_own_node_id (struct net * net, u8 app)
 }
 EXPORT_SYMBOL (ovstack_own_node_id);
 
-int
-ovstack_ipv4_loc_count (struct net * net, u8 app)
-{
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
-
-	if (unlikely (!ovapp)) {
-		pr_debug ("%s: application %d does not exist", __func__, app);
-		return 0;
-	}
-	return OVSTACK_APP_OWNNODE(ovapp)->ipv4_locator_count;
-}
-EXPORT_SYMBOL (ovstack_ipv4_loc_count);
-
-int
-ovstack_ipv6_loc_count (struct net * net, u8 app)
-{
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
-
-	if (unlikely (!ovapp)) {
-		pr_debug ("%s: application %d does not exist", __func__, app);
-		return 0;
-	}
-	return OVSTACK_APP_OWNNODE(ovapp)->ipv6_locator_count;
-}
-EXPORT_SYMBOL (ovstack_ipv6_loc_count);
-
-int
-ovstack_src_loc (void * addr, struct net * net, u8 app, u32 hash)
-{
-	struct ov_locator * loc;
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
-
-	if (unlikely (!ovapp)) {
-		pr_debug ("%s: application %d does not exist", __func__, app);
-		return 0;
-	}
-
-	loc = find_ov_locator_by_hash (OVSTACK_APP_OWNNODE (ovapp),
-				       hash, AF_UNSPEC);
-	if (loc == NULL)
-		return 0;
-
-	memcpy (addr, &(loc->remote_ip),
-		(loc->remote_ip_family == AF_INET) ?
-		sizeof (struct in_addr) : sizeof (struct in6_addr));
-
-	return loc->remote_ip_family;
-}
-EXPORT_SYMBOL (ovstack_src_loc);
-
-int
-ovstack_dst_loc (void * addr, struct net * net, u8 app, 
-		 __be32 node_id, u32 hash)
-{
-	struct ov_node * node;
-	struct ov_locator * loc;
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
-
-	if (unlikely (!ovapp)) {
-		pr_debug ("%s: application %d does not exist", __func__, app);
-		return 0;
-	}
-
-	node = find_ov_node_by_id (ovapp, node_id);
-	if (!node)
-		return 0;
-
-	loc = find_ov_locator_by_hash (node, hash, AF_UNSPEC);
-	if (loc == NULL)
-		return 0;
-
-	memcpy (addr, &(loc->remote_ip),
-		(loc->remote_ip_family == AF_INET) ?
-		sizeof (struct in_addr) : sizeof (struct in6_addr));
-
-	return loc->remote_ip_family;
-}
-EXPORT_SYMBOL (ovstack_dst_loc);
-
-int
-ovstack_ipv4_src_loc (void * addr, struct net * net, u8 app, u32 hash)
-{
-	struct ov_locator * loc;
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
-
-	if (unlikely (!ovapp)) {
-		pr_debug ("%s: application %d does not exist", __func__, app);
-		return 0;
-	}
-
-	loc = find_ov_locator_by_hash (OVSTACK_APP_OWNNODE (ovapp),
-				       hash, AF_INET);
-	if (loc == NULL)
-		return 0;
-	memcpy (addr, loc->remote_ip4, sizeof (struct in_addr));
-
-	return AF_INET;
-}
-EXPORT_SYMBOL (ovstack_ipv4_src_loc);
-
-int
-ovstack_ipv4_dst_loc (void * addr, 
-		      struct net * net, u8 app, __be32 node_id, u32 hash)
-{
-	struct ov_node * node;
-	struct ov_locator * loc;
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
-
-	if (unlikely (!ovapp)) {
-		pr_debug ("%s: application %d does not exist", __func__, app);
-		return 0;
-	}
-
-	node = find_ov_node_by_id (ovapp, node_id);
-	if (unlikely (!node)) {
-		pr_debug ("%s: node id %pI4 does not exist\n", 
-			  __func__,  &node_id);
-		return 0;
-	}
-
-	loc = find_ov_locator_by_hash (node, hash, AF_INET);
-	if (loc == NULL)
-		return 0;
-	memcpy (addr, loc->remote_ip4, sizeof (struct in_addr));
-
-	return AF_INET;
-}
-EXPORT_SYMBOL (ovstack_ipv4_dst_loc);
-
-int
-ovstack_ipv6_src_loc (void * addr, struct net * net, u8 app, u32 hash)
-{
-	struct ov_locator * loc;
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
-
-	if (unlikely (!ovapp)) {
-		pr_debug ("%s: application %d does not exist", __func__, app);
-		return 0;
-	}
-
-	loc = find_ov_locator_by_hash (OVSTACK_APP_OWNNODE (ovapp),
-				       hash, AF_INET6);
-	if (loc == NULL)
-		return 0;
-	memcpy (addr, loc->remote_ip6, sizeof (struct in6_addr));
-
-	return AF_INET6;
-}
-EXPORT_SYMBOL (ovstack_ipv6_src_loc);
-
-int
-ovstack_ipv6_dst_loc (void * addr, 
-		      struct net * net, u8 app, __be32 node_id, u32 hash)
-{
-	struct ov_node * node;
-	struct ov_locator * loc;
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
-
-	if (unlikely (!ovapp)) {
-		pr_debug ("%s: application %d does not exist", __func__, app);
-		return 0;
-	}
-
-	node = find_ov_node_by_id (ovapp, node_id);
-	if (unlikely (!node)) {
-		pr_debug ("%s: node id %pI4 does not exist\n", 
-			  __func__, &node_id);
-		return 0;
-	}
-
-	loc = find_ov_locator_by_hash (node, hash, AF_INET6);
-	if (loc == NULL)
-		return 0;
-	memcpy (addr, loc->remote_ip6, sizeof (struct in6_addr));
-
-	return AF_INET6;
-}
-EXPORT_SYMBOL (ovstack_ipv6_dst_loc);
 
 int
 ovstack_register_app_ops (struct net * net, int app, int (*app_recv_ops)
@@ -1970,25 +1986,6 @@ ovstack_unregister_app_ops (struct net * net, int app)
 EXPORT_SYMBOL (ovstack_unregister_app_ops);
 
 
-void
-ovstack_sock_free (struct sk_buff * skb)
-{
-	sock_put (skb->sk);
-}
-EXPORT_SYMBOL (ovstack_sock_free);
-
-void
-ovstack_set_owner (struct net * net, struct sk_buff * skb)
-{
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct sock * sk = ovnet->sock->sk;
-
-	skb_orphan (skb);
-	sock_hold (sk);
-	skb->sk = sk;
-	skb->destructor = ovstack_sock_free;
-}
-EXPORT_SYMBOL (ovstack_set_owner);
 
 /*****************************
  *	init/exit module
