@@ -76,7 +76,7 @@ int ovstack_unregister_app_ops (struct net * net, int app);
 
 void ovstack_set_owner (struct net * net, struct sk_buff * skb);
 
-int ovstack_output (struct sk_buff * skb, __be32 hash);
+int ovstack_xmit (struct sk_buff * skb, struct net_device * dev);
 
 
 #endif /* _LINUX_OVSTACK_ */

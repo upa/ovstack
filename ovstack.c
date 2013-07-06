@@ -14,10 +14,13 @@
 #include <linux/udp.h>
 #include <net/udp.h>
 #include <net/sock.h>
+#include <net/route.h>
+#include <net/ip6_route.h>
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
 #include <net/rtnetlink.h>
 #include <net/genetlink.h>
+
 
 #include "ovstack.h"
 #include "ovstack_netlink.h"
@@ -36,6 +39,9 @@ MODULE_AUTHOR ("upa@haeena.net");
 
 #define OVSTACK_DEFAULT_WEIGHT 50
 
+/* IP + UDP. OVHDR is already pushed by upper driver */
+#define OVSTACK_IPV4_HEADROOM (20 + 8)
+#define OVSTACK_IPV6_HEADROOM (40 + 8)
 
 static unsigned int ovstack_net_id;
 static u32 ovstack_salt __read_mostly;
@@ -106,16 +112,16 @@ struct ortable {
 	struct list_head	chain;
 	struct rcu_head		rcu;
 	
-	__be32	ort_dst;			/* destination node id */
+	__be32			ort_dst;	/* destination node id */
+	unsigned long		ort_nxt_count;	/* number of nexthops */
 	struct list_head	ort_nxts;	/* next hop list */
 };
 
 struct ortable_nexthop {
 	struct list_head 	list;
 	struct rcu_head		rcu;
-
-	struct ortable	* ort;
-	__be32	ort_next;	/* next hop node id */
+	struct ortable		* ort;
+	__be32			ort_nxt;	/* next hop node id */
 };
 
 
@@ -150,9 +156,10 @@ struct ovstack_net {
 };
 #define OVSTACK_NET_APP(ovnet, ovapp) (ovnet->apps[ovapp])
 
-/********************
- * node and locator operation functions
- *********************/
+
+/*****************************
+ ****	node and locator operations
+ *****************************/
 
 static inline struct list_head *
 node_head (struct ovstack_app * ovapp, __be32 node_id)
@@ -348,6 +355,102 @@ ov_locator_weight_set (struct ov_locator * loc, u8 weight)
 }
 
 
+/*****************************
+ ****	Routing table operations
+ *****************************/
+
+static inline struct list_head *
+ortable_head (struct ovstack_app * ovapp, __be32 dst_node_id)
+{
+	return &(ovapp->ortable_list[hash_32 (dst_node_id, ORT_HASH_BITS)]);
+}
+
+static struct ortable * 
+find_ortable (struct ovstack_app * ovapp, __be32 dst_node_id)
+{
+	struct ortable * ort;
+
+	list_for_each_entry_rcu (ort, ortable_head (ovapp, dst_node_id), list) {
+		if (ort->ort_dst == dst_node_id) 
+			return ort;
+	}
+
+	return NULL;
+}
+
+int
+ortable_add (struct ovstack_app * ovapp, __be32 dst_node_id, __be32 nxt_node_id)
+{
+	struct ortable * ort;
+	struct ortable_nexthop * ortnxt;
+
+	ort = find_ortable (ovapp, dst_node_id);
+	if (!ort) {
+		ort = kmalloc (sizeof (struct ortable), GFP_KERNEL);
+		memset (ort, 0, sizeof (struct ortable));
+		ort->ort_dst = dst_node_id;
+		INIT_LIST_HEAD (&(ort->ort_nxts));
+		list_add_rcu (&(ort->list), ortable_head (ovapp, dst_node_id));
+		list_add_rcu (&(ort->chain), &(ovapp->ortable_chain));
+	}
+
+	list_for_each_entry_rcu (ortnxt, &(ort->ort_nxts), list) {
+		if (ortnxt->ort_nxt == nxt_node_id) {
+			pr_debug ("%s: dest node %pI4 already "
+				  "has next hop %pI4", __func__, 
+				  &dst_node_id, &nxt_node_id);
+			return -EEXIST;
+		}
+	}
+	
+	ortnxt = kmalloc (sizeof (struct ortable_nexthop), GFP_KERNEL);
+	memset (ortnxt, 0, sizeof (struct ortable_nexthop));
+	ortnxt->ort_nxt = nxt_node_id;
+	ortnxt->ort = ort;
+	list_add_rcu (&(ortnxt->list), &(ort->ort_nxts));
+	ort->ort_nxt_count++;
+
+	return 1;
+}
+
+
+int
+ortable_delete (struct ovstack_app * ovapp, 
+		__be32 dst_node_id, __be32 nxt_node_id)
+{
+	struct list_head * p, * tmp;
+	struct ortable * ort;
+	struct ortable_nexthop * ortnxt;
+
+	ort = find_ortable (ovapp, dst_node_id);
+	if (!ort) {
+		pr_debug ("%s: dst node %pI4 does not exist", 
+			  __func__, &dst_node_id);
+		return -ENOENT;
+	}
+
+	list_for_each_safe (p, tmp, &(ort->ort_nxts)) {
+		ortnxt = list_entry (p, struct ortable_nexthop, list);
+		if (ortnxt->ort_nxt == nxt_node_id) {
+			list_del_rcu (p);
+			kfree_rcu (ortnxt, rcu);
+			ort->ort_nxt_count--;
+
+			if (ort->ort_nxt_count == 0) {
+				list_del_rcu (&(ort->list));
+				list_del_rcu (&(ort->chain));
+				kfree_rcu (ort, rcu);
+			}
+			return 1;
+		}
+	}
+
+	pr_debug ("%s: dest node %pI4 does not have next hop %pI4", 
+		  __func__, &dst_node_id, &nxt_node_id);
+
+	return -ENOENT;
+}
+
 
 /*****************************
  ****	pernet operations
@@ -360,7 +463,6 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	 * call function pointer according to ovstack protocl number
 	 */
 
-	__be32 hash;
 	struct ovhdr * ovh;
 	struct net * net = sock_net (skb->sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -377,12 +479,11 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	}
 
 	ovh = (struct ovhdr *) skb->data;
-	hash = ovh->ov_hash;
+	ovh->ov_ttl--;
 
 	/* application check */
 	if (!OVSTACK_NET_APP (ovnet, ovh->ov_app)) {
-		pr_debug ("%s: unknown application number %d", 
-			  __func__, ovh->ov_app);
+		netdev_dbg (skb->dev, "unknown application %d\n", ovh->ov_app);
 		return 0;
 	}
 	ovapp = OVSTACK_NET_APP (ovnet, ovh->ov_app);
@@ -390,35 +491,283 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 
 	/* this packet is not for me. routing ! */
 	if (ovh->ov_dst != ownnode->node_id) {
-		/* xmit ! */
+		ovstack_xmit (skb, skb->dev);
+		return 0;
 	}
 
 	/* callback function for overlay applicaitons */
-	if (unlikely (ovapp->app_recv_ops == NULL)) {
-		pr_debug ("%s: unknwon application number %d\n", 
-			  __func__, ovh->ov_app);
+	if (ovapp->app_recv_ops == NULL) {
+		netdev_dbg (skb->dev, "application %d does not "
+			    "register callback function\n", ovh->ov_app);
 		return 0;
 	}
 
 	return ovapp->app_recv_ops (sk, skb);
 }
 
-static inline netdev_tx_t 
-ovstack_xmit (struct sk_buff * skb, struct net_device * dev, u8 ttl)
+
+static inline netdev_tx_t
+ovstack_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
+		       struct in_addr * saddr, struct in_addr * daddr)
 {
-	/*
+	int rc;
+	struct iphdr * iph;
+	struct udphdr * uh;
+	struct flowi4 fl4;
+	struct rtable * rt;
+
+	memset (&fl4, 0, sizeof (fl4));
+	fl4.saddr = *((__be32 *)(saddr));
+	fl4.daddr = *((__be32 *)(daddr));
+
+	rt = ip_route_output_key (dev_net (dev), &fl4);
+	if (IS_ERR (rt)) {
+		netdev_dbg (dev, "no route to %pI4\n", daddr);
+		dev->stats.tx_carrier_errors++;
+		dev->stats.tx_dropped++;
+		dev_kfree_skb (skb);
+		return NETDEV_TX_OK;
+	}
+	
+	if (rt->dst.dev == dev) {
+		netdev_dbg (dev, "circular route to %pI4\n", daddr);
+		ip_rt_put (rt);
+		dev->stats.collisions++;
+		dev->stats.tx_dropped++;
+		dev_kfree_skb (skb);
+		return NETDEV_TX_OK;
+	}
+	
+	memset (&(IPCB (skb)->opt), 0, sizeof (IPCB (skb)->opt));
+	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED |
+			      IPSKB_REROUTED);
+	skb_dst_drop (skb);
+	skb_dst_set (skb, &rt->dst);
+	
+	/* setup udp header and ip header */
+	if (skb_cow_head (skb, OVSTACK_IPV4_HEADROOM)) {
+		dev->stats.tx_dropped++;
+		dev_kfree_skb (skb);
+		return NETDEV_TX_OK;
+	}
+	
+	__skb_push (skb, sizeof (struct udphdr));
+	skb_reset_transport_header (skb);
+	uh 		= udp_hdr (skb);
+	uh->dest	= htons (OVSTACK_PORT);
+	uh->source	= htons (OVSTACK_PORT);
+	uh->len		= htons (skb->len);
+	uh->check	= 0;
+
+	__skb_push (skb, sizeof (struct iphdr));
+	skb_reset_network_header (skb);
+	iph		= ip_hdr (skb);
+	iph->version	= 4;
+	iph->ihl	= sizeof (struct iphdr) >> 2;
+	iph->protocol	= IPPROTO_UDP;
+	iph->tos	= 0;
+	iph->saddr	= *((__be32 *)(saddr));
+	iph->daddr	= *((__be32 *)(daddr));
+	iph->ttl	= 16;
+
+	ovstack_set_owner (dev_net (dev), skb);
+	skb->ip_summed = CHECKSUM_NONE;
+	skb->pkt_type = PACKET_HOST;
+
+	rc = ip_local_out (skb);
+
+	if (net_xmit_eval (rc) == 0) 
+		return rc;
+	else {
+		dev->stats.tx_errors++;
+		dev->stats.tx_aborted_errors++;
+	}
+	
+	return NETDEV_TX_OK;
+}
+
+static inline netdev_tx_t
+ovstack_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
+		       struct in6_addr * saddr, struct in6_addr * daddr)
+{
+	int rc;
+	struct ipv6hdr * ip6h;
+	struct udphdr * uh;
+	struct flowi6 fl6;
+	struct dst_entry * dst;
+	
+	memset (&fl6, 0, sizeof (fl6));
+	fl6.saddr = *saddr;
+	fl6.daddr = *daddr;
+
+	dst = ip6_route_output (dev_net (dev), skb->sk, &fl6);
+	if (dst->error) {
+		netdev_dbg (dev, "no route to %pI6\n", daddr);
+		dev->stats.tx_carrier_errors++;
+		dev->stats.tx_dropped++;
+		dev_kfree_skb (skb);
+		return NETDEV_TX_OK;
+	}
+
+	if (dst->dev == dev){
+		netdev_dbg (dev, "circular route to %pI6\n", daddr);
+		dst_free (dst);
+		dev->stats.collisions++;
+		dev->stats.tx_dropped++;
+		dev_kfree_skb (skb);
+		return NETDEV_TX_OK;
+	}
+
+        memset (&(IPCB (skb)->opt), 0, sizeof (IPCB (skb)->opt));
+	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED |
+			      IPSKB_REROUTED);
+
+	skb_dst_drop (skb);
+	skb_dst_set (skb, dst);
+
+	/* setup udp hdaer and ipv6 header */
+	if (skb_cow_head (skb, OVSTACK_IPV6_HEADROOM)) {
+		dev->stats.tx_dropped++;
+		dev_kfree_skb (skb);
+		return NETDEV_TX_OK;
+	}
+
+	__skb_push (skb, sizeof (struct udphdr)) ;
+	skb_reset_transport_header (skb);
+	uh 		= udp_hdr (skb);
+	uh->dest	= htons (OVSTACK_PORT);
+	uh->source	= htons (OVSTACK_PORT);
+	uh->len		= htons (skb->len);
+	uh->check	= 0;
+
+	__skb_push (skb, sizeof (struct ipv6hdr));
+	skb_reset_network_header (skb);
+	ip6h			= ipv6_hdr (skb);
+	ip6h->version		= 6;
+	ip6h->priority		= 0;
+	ip6h->flow_lbl[0]	= 0l;
+	ip6h->flow_lbl[1]	= 0l;
+	ip6h->flow_lbl[2]	= 0l;
+	ip6h->payload_len	= htons (skb->len);
+	ip6h->nexthdr		= IPPROTO_UDP;
+	ip6h->daddr		= *daddr;
+	ip6h->saddr		= *saddr;
+	ip6h->hop_limit		= 16;
+
+	ovstack_set_owner (dev_net (dev), skb);
+	skb->pkt_type = PACKET_HOST;
+
+	rc = ip6_local_out (skb);
+
+	if (net_xmit_eval (rc) == 0) {
+		return rc;
+	} else {
+		dev->stats.tx_errors++;
+		dev->stats.tx_aborted_errors++;
+	}
+
+	return NETDEV_TX_OK;
+}
+
+static inline netdev_tx_t
+ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
+{
 	int ret;
-	u32 hash;
 	u8 loc4count = 0, loc6count = 0, ai_family = 0;
 	struct net * net = dev_net (dev);
+	struct ovhdr * ovh;
 	
 	union addr {
-		struct in_addr add4;
+		struct in_addr addr4;
 		struct in6_addr addr6;
 	} src_addr, dst_addr;
-	*/
-	return 0;
+
+	ovh = (struct ovhdr *) skb->data;
+
+	loc4count = ovstack_ipv4_loc_count (net, ovh->ov_app);
+	loc6count = ovstack_ipv6_loc_count (net, ovh->ov_app);
+
+	/* set src locator address */
+	if (loc4count && loc6count)
+		ai_family = ovstack_src_loc (&src_addr, net, 
+					     ovh->ov_app, ovh->ov_hash);
+	else if (loc4count)
+		ai_family = ovstack_ipv4_src_loc (&src_addr, net, 
+						  ovh->ov_app, ovh->ov_hash);
+	else if (loc6count)
+		ai_family = ovstack_ipv6_src_loc (&src_addr, net, 
+						  ovh->ov_app, ovh->ov_hash);
+	else 
+		goto error_drop;
+	
+	/* set dst locator address */
+	if (ai_family == AF_INET) {
+		ret = ovstack_ipv4_dst_loc (&dst_addr, net, ovh->ov_app,
+					    ovh->ov_dst, ovh->ov_hash);
+		if (!ret)
+			goto error_drop;
+
+		return ovstack_xmit_ipv4_loc (skb, dev, &src_addr.addr4,
+					      &dst_addr.addr4);
+
+	} else if (ai_family == AF_INET6) {
+		ret = ovstack_ipv6_dst_loc (&dst_addr, net, ovh->ov_app,
+					    ovh->ov_dst, ovh->ov_hash);
+		if (!ret)
+			goto error_drop;
+
+		return ovstack_xmit_ipv6_loc (skb, dev, &src_addr.addr6,
+					      &dst_addr.addr6);
+	} else  {
+		pr_debug ("%s: unknwon locator family %d", __func__, ai_family);
+		goto error_drop;
+	}
+	
+	return NETDEV_TX_OK;
+
+error_drop:
+	dev->stats.tx_errors++;
+	dev->stats.tx_aborted_errors++;
+	return NETDEV_TX_OK;
+
+
 }
+
+inline netdev_tx_t 
+ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
+{
+	int ret;
+	struct ovhdr * ovh;
+	struct net * net = dev_net (dev);
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp;
+	struct ortable * ort;
+	struct ortable_nexthop * ortnxt;
+
+	ovh = (struct ovhdr *) skb->data;
+	ovapp = OVSTACK_NET_APP (ovnet, ovh->ov_app);
+
+	if (!ovapp) {
+		pr_debug ("%s: unregisterd ovstack app %d", 
+			  __func__, ovh->ov_app);
+		return NETDEV_TX_OK;
+	}
+
+	ort = find_ortable (ovapp, ovh->ov_dst);
+	if (!ort || ort->ort_nxt_count == 0) {
+		pr_debug ("%s: no route to host %pI4", __func__, &ovh->ov_dst);
+		return NETDEV_TX_OK;
+	}
+
+	list_for_each_entry_rcu (ortnxt, &(ort->ort_nxts), list) {
+		ret = ovstack_xmit_node (skb, dev, ortnxt->ort_nxt);
+		if (ret != NETDEV_TX_OK)
+			return ret;
+	}
+
+	return NETDEV_TX_OK;
+}
+EXPORT_SYMBOL (ovstack_xmit);
 
 static __net_init int
 ovstack_init_net (struct net * net)
@@ -1271,6 +1620,8 @@ out:
 static struct nla_policy ovstack_nl_policy[OVSTACK_ATTR_MAX + 1] = {
 	[OVSTACK_ATTR_NONE]		= { .type = NLA_UNSPEC, },
 	[OVSTACK_ATTR_NODE_ID]		= { .type = NLA_U32, },
+	[OVSTACK_ATTR_DST_NODE_ID]	= { .type = NLA_U32, },
+	[OVSTACK_ATTR_NXT_NODE_ID]	= { .type = NLA_U32, },
 	[OVSTACK_ATTR_APP_ID]		= { .type = NLA_U8 },
 	[OVSTACK_ATTR_LOCATOR_IP4ADDR]	= { .type = NLA_U32, },
 	[OVSTACK_ATTR_LOCATOR_IP6ADDR]	= { .type = NLA_BINARY,
