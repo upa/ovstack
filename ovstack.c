@@ -123,6 +123,7 @@ struct ortable_nexthop {
 	struct ortable		* ort;
 	__be32			ort_nxt;	/* next hop node id */
 };
+#define ort_nxt_dst ort->ort_dst
 
 
 /* Ovelay Network Application */
@@ -147,6 +148,16 @@ struct ovstack_app {
 
 #define OVSTACK_APP_LASTNODE(app)					\
 	(list_entry_rcu (app->node_chain.prev, struct ov_node, chain))
+
+#define OVSTACK_APP_NEXTNUM(app)					\
+	do {								\
+		int _n;							\
+		for (_n = app + 1; _n < OVSTACK_APP_MAX; _n++)		\
+			if (n) {					\
+				app = _n;				\
+				break;					\
+			}						\
+	} while (0)							\
 
 
 /* per network namespace structure */
@@ -681,7 +692,6 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	}
 
 	ovh = (struct ovhdr *) skb->data;
-	ovh->ov_ttl--;
 
 	/* application check */
 	if (!OVSTACK_NET_APP (ovnet, ovh->ov_app)) {
@@ -693,6 +703,10 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 
 	/* this packet is not for me. routing ! */
 	if (ovh->ov_dst != ownnode->node_id) {
+		ovh->ov_ttl--;
+		if (ovh->ov_ttl == 0) 
+			return 0;
+
 		ovstack_xmit (skb, skb->dev);
 		return 0;
 	}
@@ -900,14 +914,14 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 		ai_family = ovstack_ipv6_src_loc (&src_addr, net, 
 						  ovh->ov_app, ovh->ov_hash);
 	else 
-		goto error_drop;
+		goto noroute_drop;
 	
 	/* set dst locator address */
 	if (ai_family == AF_INET) {
 		ret = ovstack_ipv4_dst_loc (&dst_addr, net, ovh->ov_app,
 					    ovh->ov_dst, ovh->ov_hash);
 		if (!ret)
-			goto error_drop;
+			goto noroute_drop;
 
 		return ovstack_xmit_ipv4_loc (skb, dev, &src_addr.addr4,
 					      &dst_addr.addr4);
@@ -916,7 +930,7 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 		ret = ovstack_ipv6_dst_loc (&dst_addr, net, ovh->ov_app,
 					    ovh->ov_dst, ovh->ov_hash);
 		if (!ret)
-			goto error_drop;
+			goto noroute_drop;
 
 		return ovstack_xmit_ipv6_loc (skb, dev, &src_addr.addr6,
 					      &dst_addr.addr6);
@@ -930,9 +944,9 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 error_drop:
 	dev->stats.tx_errors++;
 	dev->stats.tx_aborted_errors++;
+
+noroute_drop:
 	return NETDEV_TX_OK;
-
-
 }
 
 inline netdev_tx_t 
@@ -1496,62 +1510,6 @@ ovstack_nl_cmd_node_weight_set (struct sk_buff * skb, struct genl_info * info)
 	return 0;
 }
 
-#if 0
-static int
-ovstack_nl_cmd_node_id_get (struct sk_buff * skb, struct genl_info * info)
-{
-
-	u8 app;
-	int ret = -ENOBUFS;
-	void * hdr;
-	struct sk_buff * msg;
-	struct net * net = sock_net (skb->sk);
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp;
-	struct ov_node * ownnode;
-
-	if (!info->attrs[OVSTACK_ATTR_APP_ID]) {
-		pr_debug ("%s: app id is not specified\n", __func__);
-		return -EINVAL;
-	}
-	app = nla_get_u8 (info->attrs[OVSTACK_ATTR_APP_ID]);
-	if (!OVSTACK_NET_APP (ovnet, app)) {
-		pr_debug ("%s: app id %d does not exist\n", __func__, app);
-		return -EINVAL;
-	}
-
-	ovapp = OVSTACK_NET_APP (ovnet, app);
-	ownnode = OVSTACK_APP_OWNNODE (ovapp);
-
-	msg = nlmsg_new (NLMSG_GOODSIZE, GFP_KERNEL);
-	if (msg) {
-		pr_debug ("%s: can not create nlmsg\n", __func__);
-		return -ENOMEM;
-	}
-	
-	hdr = genlmsg_put (msg, info->snd_portid, info->snd_seq,
-			   &ovstack_nl_family, NLM_F_ACK,
-			   OVSTACK_CMD_NODE_ID_GET);
-	if (IS_ERR (hdr)) 
-		PTR_ERR (hdr);
-
-	if (nla_put_be32 (msg, OVSTACK_ATTR_NODE_ID, ownnode->node_id)) {
-		genlmsg_cancel (msg, hdr);
-		goto err_out;
-	}
-
-	ret = genlmsg_end (msg, hdr);
-	if (ret < 0) 
-		goto err_out;
-	
-	return genlmsg_unicast (net, msg, info->snd_portid);
-
-err_out:
-	nlmsg_free (msg);
-	return ret;
-}
-#endif
-
 static int
 ovstack_nl_app_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
 		     int cmd, struct ovstack_app * ovapp)
@@ -1591,6 +1549,9 @@ ovstack_nl_cmd_app_id_dump (struct sk_buff * skb,
 
 	app = cb->args[1];
 
+	if (!OVSTACK_NET_APP (ovnet, app))
+		OVSTACK_APP_NEXTNUM (app);
+
 	if (app == OVSTACK_APP_MAX - 1)
 		goto out;
 
@@ -1598,13 +1559,6 @@ ovstack_nl_cmd_app_id_dump (struct sk_buff * skb,
 	ovstack_nl_app_send (skb, NETLINK_CB (cb->skb).portid,
 			     cb->nlh->nlmsg_seq, NLM_F_MULTI,
 			     OVSTACK_CMD_APP_ID_GET, ovapp);
-
-	for (n = app; n < OVSTACK_APP_MAX; n++) {
-		if (n) {
-			app = n;
-			break;
-		} 
-	}
 
 	cb->args[1] = app;
 out:
@@ -1672,73 +1626,6 @@ ovstack_nl_node_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
 	return 0;
 }
 
-#if 0 
-static int
-ovstack_nl_cmd_locator_get (struct sk_buff * skb, struct genl_info * info)
-{
-	int ret;
-	u8 app, ai_family;
-	__be32 * addr = NULL;
-	struct in_addr addr4;
-	struct in6_addr addr6;
-	struct sk_buff * msg;
-	struct net * net = sock_net (skb->sk);
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp;
-	struct ov_node * ownnode;
-	struct ov_locator * loc;
-
-
-        if (!info->attrs[OVSTACK_ATTR_APP_ID]) {
-		pr_debug ("%s: app id is not specified\n", __func__);
-		return -EINVAL;
-	}
-	app = nla_get_u8 (info->attrs[OVSTACK_ATTR_APP_ID]);
-	if (!OVSTACK_NET_APP (ovnet, app)) {
-		pr_debug ("%s: app id %d does not exist\n", __func__, app);
-		return -EINVAL;
-	}
-
-	if (info->attrs[OVSTACK_ATTR_LOCATOR_IP4ADDR]) {
-		ai_family = AF_INET;
-		addr = (__be32 *)&addr4;
-		addr4.s_addr = nla_get_be32 
-			(info->attrs[OVSTACK_ATTR_LOCATOR_IP4ADDR]);
-	}
-	if (info->attrs[OVSTACK_ATTR_LOCATOR_IP6ADDR]) {
-		ai_family = AF_INET6;
-		addr = (__be32 *)&addr6;
-		nla_memcpy (&addr6, info->attrs[OVSTACK_ATTR_LOCATOR_IP6ADDR],
-			    sizeof (addr6));
-	}
-	if (addr == NULL) {
-		pr_debug ("%s: ip address is not specified\n", __func__);
-		return -EINVAL;
-	}
-
-	ovapp = OVSTACK_NET_APP (ovnet, app);
-	ownnode = OVSTACK_APP_OWNNODE (ovapp);
-	
-	loc = find_ov_locator_by_addr (ownnode, addr, ai_family);
-	if (loc == NULL) 
-		return -ENOENT;
-
-	msg = nlmsg_new (NLMSG_GOODSIZE, GFP_KERNEL);
-	if (!msg) 
-		return -ENOMEM;
-
-	ret = ovstack_nl_locator_send (msg, info->snd_portid, info->snd_seq,
-				       NLM_F_ACK, OVSTACK_CMD_LOCATOR_GET,
-				       loc);
-	if (ret < 0) {
-		nlmsg_free (msg);
-		return ret;
-	}
-
-	return genlmsg_unicast (net, msg, info->snd_portid);
-}
-#endif
-
 static int
 ovstack_nl_cmd_locator_dump (struct sk_buff * skb,
 			     struct netlink_callback * cb)
@@ -1751,6 +1638,9 @@ ovstack_nl_cmd_locator_dump (struct sk_buff * skb,
 	struct ov_node * ownnode;
 
 	app = cb->args[1];
+
+	if (!OVSTACK_NET_APP (ovnet, app))
+		OVSTACK_APP_NEXTNUM (app);
 
 	if (app == OVSTACK_APP_MAX - 1)
 		goto out;
@@ -1773,7 +1663,6 @@ out:
 	return skb->len;
 }
 
-
 static int
 ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 {
@@ -1787,6 +1676,9 @@ ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 
 	app = cb->args[1];
 	node_id = cb->args[2];
+
+	if (!OVSTACK_NET_APP (ovnet, app))
+		OVSTACK_APP_NEXTNUM (app);
 
 	if (app == OVSTACK_APP_MAX || node_id == 0xFFFFFFFF)
 		goto out;
@@ -1803,21 +1695,146 @@ ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 				    cb->nlh->nlmsg_seq, NLM_F_ACK, 
 				    OVSTACK_CMD_LOCATOR_GET, node);
 
-	if (node == OVSTACK_APP_LASTNODE (ovapp)) {
-		for (n = app; n < OVSTACK_APP_MAX; n++) {
-			if (n) {
-				app = n;
-				break;
-			} 
-		}
-	}
-
 	cb->args[1] = app;
 	cb->args[2] = node_id;
 
 out:
 	return skb->len;
 }
+
+static int
+ovstack_nl_cmd_route_add (struct sk_buff * skb, struct genl_info * info)
+{
+	int ret;
+	u8 app;
+	__be32 dst_node_id, nxt_node_id;
+	struct net * net = sock_net (skb->sk);
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp;
+
+	if (!info->attrs[OVSTACK_ATTR_APP_ID]) {
+		pr_debug ("%s: app id is not specified", __func__);
+		return -EINVAL;
+	}
+	app = nla_get_u8 (info->attrs[OVSTACK_ATTR_APP_ID]);
+	if (!OVSTACK_NET_APP (ovnet, app)) {
+		pr_debug ("%s: app id %d does not exist", __func__, app);
+		return -EINVAL;
+	}
+
+	if (!info->attrs[OVSTACK_ATTR_DST_NODE_ID]) {
+		pr_debug ("%s: destiantion node is not specifed", __func__);
+		return -EINVAL;
+	}
+	dst_node_id = nla_get_be32 (info->attrs[OVSTACK_ATTR_DST_NODE_ID]);
+
+	if (!info->attrs[OVSTACK_ATTR_NXT_NODE_ID]) {
+		pr_debug ("%s: destiantion node is not specifed", __func__);
+		return -EINVAL;
+	}
+	nxt_node_id = nla_get_be32 (info->attrs[OVSTACK_ATTR_NXT_NODE_ID]);
+	
+	ovapp = OVSTACK_NET_APP (ovnet, app);
+	ret = ortable_add (ovapp, dst_node_id, nxt_node_id);
+	
+	if (!ret) 
+		return ret;
+
+	return 0;
+}
+
+static int
+ovstack_nl_cmd_route_delete (struct sk_buff * skb, struct genl_info * info)
+{
+	int ret;
+	u8 app;
+	__be32 dst_node_id, nxt_node_id;
+	struct net * net = sock_net (skb->sk);
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp;
+
+	if (!info->attrs[OVSTACK_ATTR_APP_ID]) {
+		pr_debug ("%s: app id is not specified", __func__);
+		return -EINVAL;
+	}
+	app = nla_get_u8 (info->attrs[OVSTACK_ATTR_APP_ID]);
+	if (!OVSTACK_NET_APP (ovnet, app)) {
+		pr_debug ("%s: app id %d does not exist", __func__, app);
+		return -EINVAL;
+	}
+
+	if (!info->attrs[OVSTACK_ATTR_DST_NODE_ID]) {
+		pr_debug ("%s: destiantion node is not specifed", __func__);
+		return -EINVAL;
+	}
+	dst_node_id = nla_get_be32 (info->attrs[OVSTACK_ATTR_DST_NODE_ID]);
+
+	if (!info->attrs[OVSTACK_ATTR_NXT_NODE_ID]) {
+		pr_debug ("%s: destiantion node is not specifed", __func__);
+		return -EINVAL;
+	}
+	nxt_node_id = nla_get_be32 (info->attrs[OVSTACK_ATTR_NXT_NODE_ID]);
+	
+	ovapp = OVSTACK_NET_APP (ovnet, app);
+	ret = ortable_delete (ovapp, dst_node_id, nxt_node_id);
+	
+	if (!ret) 
+		return ret;
+
+	return 0;
+}
+
+static int
+ovstack_nl_route_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
+		       int cmd, u8 app, struct ortable_nexthop * ortnxt)
+{
+	void * hdr;
+	
+	if (!skb || ! ortnxt)
+		return -1;
+
+	hdr = genlmsg_put (skb, pid, seq, &ovstack_nl_family, flags, cmd);
+	
+	if (IS_ERR (hdr))
+		PTR_ERR (hdr);
+
+	if (nla_put_u8 (skb, OVSTACK_ATTR_APP_ID, app) ||
+	    nla_put_be32 (skb, OVSTACK_ATTR_DST_NODE_ID, ortnxt->ort_nxt_dst) ||
+	    nla_put_be32 (skb, OVSTACK_ATTR_NXT_NODE_ID, ortnxt->ort_nxt)) 
+		goto err_out;
+
+	return genlmsg_end (skb, hdr);
+
+err_out:
+	genlmsg_cancel (skb, hdr);
+	return -1;
+}
+
+static int
+ovstack_nl_cmd_route_dump (struct sk_buff * skb, struct netlink_callback * cb)
+{
+	u8 app;
+	int n, ret;
+	struct net * net = sock_net (skb->sk);
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp;
+	struct ortable * ort;
+	struct ortable_nexthop * ortnxt;
+
+	app = cb->args[1];
+
+	if (!OVSTACK_NET_APP (ovnet, app)) 
+		OVSTACK_APP_NEXTNUM (app);
+
+	if (app == OVSTACK_APP_MAX - 1)
+		goto out;
+
+	
+
+out:
+	return skb->len;
+}
+
 
 static struct nla_policy ovstack_nl_policy[OVSTACK_ATTR_MAX + 1] = {
 	[OVSTACK_ATTR_NONE]		= { .type = NLA_UNSPEC, },
@@ -1888,6 +1905,18 @@ static struct genl_ops ovstack_nl_ops[] = {
 		.cmd = OVSTACK_CMD_NODE_GET,
 		.dumpit = ovstack_nl_cmd_node_dump,
 		.policy = ovstack_nl_policy,
+	},
+	{
+		.cmd = OVSTACK_CMD_ROUTE_ADD,
+		.doit = ovstack_nl_cmd_route_add,
+		.policy = ovstack_nl_policy,
+		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = OVSTACK_CMD_ROUTE_DELETE,
+		.doit = ovstack_nl_cmd_route_delete,
+		.policy = ovstack_nl_policy,
+		.flags = GENL_ADMIN_PERM,
 	},
 };
 
