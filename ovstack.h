@@ -5,6 +5,9 @@
 #ifndef _LINUX_OVSTACK_
 #define _LINUX_OVSTACK_
 
+#include <linux/netdevice.h>
+#include <net/net_namespace.h>
+
 #define OVSTACK_APP_IP        4
 #define OVSTACK_APP_IPV6      6
 #define OVSTACK_APP_ETHER     7
@@ -49,8 +52,8 @@ struct ovhdr {
  */
 
 __be32 ovstack_own_node_id (struct net * net, u8 app);
-int ovstack_resgister_app_ops (struct net * net, int app, int (*app_recv_ops)
-			       (struct sock * sk, struct sk_buff * skb));
+int ovstack_register_app_ops (struct net * net, int app, int (*app_recv_ops)
+			      (struct sock * sk, struct sk_buff * skb));
 int ovstack_unregister_app_ops (struct net * net, int app);
 
 netdev_tx_t ovstack_xmit (struct sk_buff * skb, struct net_device * dev);

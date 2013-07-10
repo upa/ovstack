@@ -334,7 +334,7 @@ ov_locator_add (struct ov_node * node, struct ov_locator * loc)
 }
 
 static void
-ov_locator_del (struct ov_node * node, struct ov_locator * loc)
+ov_locator_delete (struct ov_node * node, struct ov_locator * loc)
 {
 	loc->node = NULL;
 	list_del_rcu (&(loc->list));
@@ -664,6 +664,25 @@ ortable_delete (struct ovstack_app * ovapp,
 	return -ENOENT;
 }
 
+int
+ortable_destroy (struct ortable * ort)
+{
+	struct list_head * p, * tmp;
+	struct ortable_nexthop * ortnxt;
+
+	list_for_each_safe (p, tmp, &(ort->ort_nxts)) {
+		ortnxt = list_entry (p, struct ortable_nexthop, list);
+		list_del_rcu (p);
+		kfree_rcu (ortnxt, rcu);
+		ort->ort_nxt_count--;
+	}
+	
+	list_del_rcu (&(ort->list));
+	list_del_rcu (&(ort->chain));
+	kfree_rcu (ort, rcu);
+
+	return 0;
+}
 
 /*****************************
  ****	pernet operations
@@ -1216,7 +1235,7 @@ ovstack_nl_cmd_locator_delete (struct sk_buff * skb, struct genl_info * info)
 		pr_debug ("%s: locator does not exist\n", __func__);
 		return -ENOENT;
 	}
-	ov_locator_del (ownnode, loc);
+	ov_locator_delete (ownnode, loc);
 	kfree_rcu (loc, rcu);
 
 	return 0;
@@ -1428,7 +1447,7 @@ ovstack_nl_cmd_node_delete (struct sk_buff * skb, struct genl_info * info)
 		return -ENOENT;
 	}
 
-	ov_locator_del (node, loc);
+	ov_locator_delete (node, loc);
 	kfree_rcu (loc, rcu);
 
 out:
@@ -1981,6 +2000,7 @@ ovstack_register_app_ops (struct net * net, int app, int (*app_recv_ops)
 	}
 
 	/* alloc new ov app instance */
+	
 	ovapp = kmalloc (sizeof (struct ovstack_app), GFP_KERNEL);
 	memset (ovapp, 0, sizeof (struct ovstack_app));
 
@@ -2001,6 +2021,10 @@ ovstack_register_app_ops (struct net * net, int app, int (*app_recv_ops)
 
 	/* set packet recv callback */
 	ovapp->app_recv_ops = app_recv_ops;
+	
+	OVSTACK_NET_APP (ovnet, app) = ovapp;
+
+	printk (KERN_INFO "ovstack application (%d) is loaded\n", app);
 
 	return 1;
 }
@@ -2009,23 +2033,43 @@ EXPORT_SYMBOL (ovstack_register_app_ops);
 int
 ovstack_unregister_app_ops (struct net * net, int app)
 {
+	struct list_head * p, * tmp;
+	struct ov_node * node;
+	struct ortable * ort;
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp;
 
 	if (app - 1 > OVSTACK_APP_MAX) 
 		return -EINVAL;
 
-	if (OVSTACK_NET_APP (ovnet, app)) {
+	if (!OVSTACK_NET_APP (ovnet, app)) {
 		pr_debug ("%s: application %d does not exist",
 			  __func__, app);
 		return -EINVAL;
 	}
 	
-	/* destroy app 
-	   - destroy LIB
-	   - destroy Routing table
-	   - free own node and its locators
-	 */
+	ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	/* destroy locator information base */
+	list_for_each_safe (p, tmp, &ovapp->node_chain) {
+		node = list_entry (p, struct ov_node, chain);
+		ov_node_delete (node);
+	}
 	
+	/* destroy overlay routing table */
+	list_for_each_safe (p, tmp, &ovapp->ortable_chain) {
+		ort = list_entry (p, struct ortable, chain);
+		ortable_destroy (ort);
+	}
+
+	/* destroy own self */
+	ov_node_delete (OVSTACK_APP_OWNNODE (ovapp));
+
+	kfree (ovapp);
+	ovnet->apps[app] = NULL;
+
+	printk (KERN_INFO "ovstack application (%d) is unloaded\n", app);
+
 	return 1;
 }
 EXPORT_SYMBOL (ovstack_unregister_app_ops);

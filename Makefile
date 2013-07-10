@@ -4,7 +4,7 @@ VERBOSE = 0
 c_flags = -DDEBUG
 
 #obj-m := ovstack.o oveth.o
-obj-m := ovstack.o 
+obj-m := ovstack.o dummy.o
 
 all:
 	make -C $(KERNELSRCDIR) SUBDIRS=$(BUILD_DIR) KBUILD_VERBOSE=$(VERBOSE)  modules
