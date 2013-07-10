@@ -57,5 +57,15 @@ netdev_tx_t ovstack_xmit (struct sk_buff * skb, struct net_device * dev);
 
 
 
+/*
+ * ovstack applications
+ */
+
+#define OVAPP_DUMMY	0
+#define OVAPP_IP	4
+#define OVAPP_IPV6	6
+#define	OVAPP_ETHERNET	7
+
+
 
 #endif /* _LINUX_OVSTACK_ */

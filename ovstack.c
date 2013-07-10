@@ -1057,7 +1057,7 @@ static struct pernet_operations ovstack_net_ops = {
 
 
 /*****************************
- ****	genl_ops 
+ ****	Generic Netwolink Operations
  *****************************/
 
 
@@ -1813,8 +1813,8 @@ err_out:
 static int
 ovstack_nl_cmd_route_dump (struct sk_buff * skb, struct netlink_callback * cb)
 {
+	int n;
 	u8 app;
-	int n, ret;
 	struct net * net = sock_net (skb->sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ovstack_app * ovapp;
@@ -1829,7 +1829,18 @@ ovstack_nl_cmd_route_dump (struct sk_buff * skb, struct netlink_callback * cb)
 	if (app == OVSTACK_APP_MAX - 1)
 		goto out;
 
-	
+	ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	list_for_each_entry_rcu (ort, &ovapp->ortable_chain, chain) {
+		list_for_each_entry_rcu (ortnxt, &ort->ort_nxts, list) {
+			ovstack_nl_route_send (skb, NETLINK_CB (cb->skb).portid,
+					       cb->nlh->nlmsg_seq, NLM_F_MULTI,
+					       OVSTACK_CMD_ROUTE_GET, app, 
+					       ortnxt);
+		}
+	}
+
+	cb->args[1] = app;
 
 out:
 	return skb->len;
@@ -1917,6 +1928,11 @@ static struct genl_ops ovstack_nl_ops[] = {
 		.doit = ovstack_nl_cmd_route_delete,
 		.policy = ovstack_nl_policy,
 		.flags = GENL_ADMIN_PERM,
+	},
+	{
+		.cmd = OVSTACK_CMD_ROUTE_GET,
+		.dumpit = ovstack_nl_cmd_route_dump,
+		.policy = ovstack_nl_policy,
 	},
 };
 
