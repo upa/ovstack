@@ -40,6 +40,7 @@ __init ovdummy_init_module (void)
 	printk ("struct net pointer is %p\n", net);
 
 	rc = ovstack_register_app_ops (net, OVAPP_DUMMY, dummy_recv_ops);
+	rc = ovstack_register_app_ops (net, OVAPP_DUMMY, dummy_recv_ops);
 
 	printk (KERN_INFO "DUMMY: ovstack dummy application (%d) is loaded\n", 
 		OVAPP_DUMMY);
@@ -53,6 +54,7 @@ __exit ovdummy_exit_module (void)
 {
 	struct net * net = get_net_ns_by_pid (1);
 
+	ovstack_unregister_app_ops (net, OVAPP_DUMMY);
 	ovstack_unregister_app_ops (net, OVAPP_DUMMY);
 
 	printk (KERN_INFO "DUMMY : ovstack dummy application "

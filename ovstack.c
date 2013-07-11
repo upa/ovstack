@@ -2063,7 +2063,7 @@ ovstack_unregister_app_ops (struct net * net, int app)
 	}
 
 	/* destroy own self */
-	ov_node_delete (OVSTACK_APP_OWNNODE (ovapp));
+	ov_node_destroy (OVSTACK_APP_OWNNODE (ovapp));
 
 	kfree (ovapp);
 	ovnet->apps[app] = NULL;
