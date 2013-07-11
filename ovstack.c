@@ -125,7 +125,6 @@ struct ortable_nexthop {
 };
 #define ort_nxt_dst ort->ort_dst
 
-
 /* Ovelay Network Application */
 struct ovstack_app {
 
@@ -144,27 +143,38 @@ struct ovstack_app {
 #define OVSTACK_APP_OWNNODE(app) (app->own_node)
 
 #define OVSTACK_APP_FIRSTNODE(app)					\
-	(list_entry_rcu (app->node_chain.next, struct ov_node, chain))
+	((app->node_chain.next == &app->node_chain) ? NULL :		\
+	 (list_entry_rcu (app->node_chain.next, struct ov_node, chain)))
 
 #define OVSTACK_APP_LASTNODE(app)					\
-	(list_entry_rcu (app->node_chain.prev, struct ov_node, chain))
+	((app->node_chain.prev == &app->node_chain) ? NULL :	\
+	 (list_entry_rcu (app->node_chain.prev, struct ov_node, chain)))
 
 #define OVSTACK_APP_NEXTNUM(app)					\
 	do {								\
 		int _n;							\
-		for (_n = app + 1; _n < OVSTACK_APP_MAX; _n++) {	\
-			if (n) {					\
+		for (_n = app; _n < OVSTACK_APP_MAX; _n++) {	\
+			if (_n) {					\
 				app = _n;				\
 				break;					\
 			}						\
 		}							\
 	} while (0)							\
 
+#define OVSTACK_APP_FIRSTROUTE(app)					\
+	((app->ortable_chain.next == &app->ortable_chain) ? NULL :	\
+	 (list_entry_rcu (app->ortable_chain.next, struct ortable, chain)))
+
+#define OVSTACK_APP_LASTROUTE(app)					\
+	((app->ortable_chain.prev == &app->ortable_chain) ? NULL :	\
+	 (list_entry_rcu (app->ortable_chain.prev, struct ortable, chain)))
+
+
 
 /* per network namespace structure */
 struct ovstack_net {
 	struct socket * sock;				/* udp encap socket */
-	struct ovstack_app * apps[OVSTACK_APP_MAX];	/* ov applications */
+	struct ovstack_app * apps[OVSTACK_APP_MAX + 1];	/* ov applications */
 };
 #define OVSTACK_NET_APP(ovnet, ovapp) (ovnet->apps[ovapp])
 
@@ -1019,7 +1029,7 @@ ovstack_init_net (struct net * net)
 	
 	memset (ovnet, 0, sizeof (struct ovstack_net));
 
-	for (n = 0; n < OVSTACK_APP_MAX; n++) 
+	for (n = 0; n < OVSTACK_APP_MAX + 1; n++) 
 		ovnet->apps[n] = NULL;
 
 	/* udp encapsulation socket init */
@@ -1561,7 +1571,6 @@ static int
 ovstack_nl_cmd_app_id_dump (struct sk_buff * skb,
 			    struct netlink_callback * cb)
 {
-	int n;
 	u8 app;
 	struct net * net = sock_net (skb->sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -1572,7 +1581,7 @@ ovstack_nl_cmd_app_id_dump (struct sk_buff * skb,
 	if (!OVSTACK_NET_APP (ovnet, app))
 		OVSTACK_APP_NEXTNUM (app);
 
-	if (app == OVSTACK_APP_MAX - 1)
+	if (app == OVSTACK_APP_MAX)
 		goto out;
 
 	ovapp = OVSTACK_NET_APP (ovnet, app);
@@ -1589,7 +1598,6 @@ static int
 ovstack_nl_cmd_node_id_dump (struct sk_buff * skb,
 			    struct netlink_callback * cb)
 {
-	int n;
 	u8 app;
 	struct net * net = sock_net (skb->sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -1600,7 +1608,7 @@ ovstack_nl_cmd_node_id_dump (struct sk_buff * skb,
 	if (!OVSTACK_NET_APP (ovnet, app))
 		OVSTACK_APP_NEXTNUM (app);
 
-	if (app == OVSTACK_APP_MAX - 1)
+	if (app == OVSTACK_APP_MAX)
 		goto out;
 
 	ovapp = OVSTACK_NET_APP (ovnet, app);
@@ -1667,11 +1675,13 @@ ovstack_nl_node_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
 	if (!node) 
 		return 0;
 
-	list_for_each_entry_rcu (loc, &(node->ipv4_locator_list), list) 
+	list_for_each_entry_rcu (loc, &(node->ipv4_locator_list), list) {
 		ovstack_nl_locator_send (skb, pid, seq, flags, cmd, app, loc);
+	}
 
-	list_for_each_entry_rcu (loc, &(node->ipv6_locator_list), list) 
+	list_for_each_entry_rcu (loc, &(node->ipv6_locator_list), list) {
 		ovstack_nl_locator_send (skb, pid, seq, flags, cmd, app, loc);
+	}
 
 	return 0;
 }
@@ -1681,22 +1691,25 @@ ovstack_nl_cmd_locator_dump (struct sk_buff * skb,
 			     struct netlink_callback * cb)
 {
 	u8 app;
-	int n, ret;
+	int ret;
 	struct net * net = sock_net (skb->sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct ovstack_app * ovapp;
-	struct ov_node * ownnode;
+	struct ovstack_app * ovapp = NULL;
+	struct ov_node * ownnode = NULL;
 
-	app = cb->args[1];
+	for (app = cb->args[1]; app < OVSTACK_APP_MAX; app++) {
+		ovapp = OVSTACK_NET_APP (ovnet, app);
+		if (!ovapp)
+			continue;
+		ownnode = OVSTACK_APP_OWNNODE (ovapp);
 
-	if (!OVSTACK_NET_APP (ovnet, app))
-		OVSTACK_APP_NEXTNUM (app);
+		if (ownnode->ipv4_locator_count || ownnode->ipv6_locator_count)
+			break;
+	}
 
-	if (app == OVSTACK_APP_MAX - 1)
+	if (app == OVSTACK_APP_MAX)
 		goto out;
 
-	ovapp = OVSTACK_NET_APP (ovnet, app);
-	ownnode = OVSTACK_APP_OWNNODE (ovapp);
 	ret = ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).portid,
 				    cb->nlh->nlmsg_seq,  NLM_F_MULTI,
 				    OVSTACK_CMD_LOCATOR_GET, app, ownnode);
@@ -1709,45 +1722,30 @@ out:
 static int
 ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 {
-	int n, ret;
 	u8 app;
-	__be32 node_id;
 	struct net * net = sock_net (skb->sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ovstack_app * ovapp;
 	struct ov_node * node;
 
-	app = cb->args[1];
-	node_id = cb->args[2];
-
-	if (!OVSTACK_NET_APP (ovnet, app))
-		OVSTACK_APP_NEXTNUM (app);
-
-	if (app == OVSTACK_APP_MAX || node_id == 0xFFFFFFFF)
-		goto out;
-
-	ovapp = OVSTACK_NET_APP (ovnet, app);
-	node = (node_id == 0) ? 
-		OVSTACK_APP_FIRSTNODE (ovapp) :
-		find_ov_node_by_id (ovapp, node_id);
-
-	if (!node) 
-		goto out;
-
-	ret = ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).portid,
-				    cb->nlh->nlmsg_seq, NLM_F_ACK, 
-				    OVSTACK_CMD_LOCATOR_GET, app, node);
-
-	if (node == OVSTACK_APP_LASTNODE (ovapp)) {
-		app++;
-		node_id = 0;
-	} else {
-		node = OV_NODE_NEXT (node);
-		node_id = node->node_id;
+	for (app = cb->args[1]; app < OVSTACK_APP_MAX; app++) {
+		ovapp = OVSTACK_NET_APP (ovnet, app);
+		if (!ovapp)
+			continue;
+		if (OVSTACK_APP_FIRSTNODE (ovapp))
+			break;
 	}
 
-	cb->args[1] = app;
-	cb->args[2] = node_id;
+	if (app == OVSTACK_APP_MAX)
+		goto out;
+
+	list_for_each_entry_rcu (node, &ovapp->node_chain, chain) {
+		ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).portid,
+				      cb->nlh->nlmsg_seq, NLM_F_MULTI,
+				      OVSTACK_CMD_NODE_GET, app, node);
+	}
+
+	cb->args[1] = app + 1;
 
 out:
 	return skb->len;
@@ -1865,7 +1863,6 @@ err_out:
 static int
 ovstack_nl_cmd_route_dump (struct sk_buff * skb, struct netlink_callback * cb)
 {
-	int n;
 	u8 app;
 	struct net * net = sock_net (skb->sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -1873,26 +1870,28 @@ ovstack_nl_cmd_route_dump (struct sk_buff * skb, struct netlink_callback * cb)
 	struct ortable * ort;
 	struct ortable_nexthop * ortnxt;
 
-	app = cb->args[1];
+	for (app = cb->args[1]; app < OVSTACK_APP_MAX; app++) {
+		ovapp = OVSTACK_NET_APP (ovnet, app);
+		if (!ovapp)
+			continue;
+		if (OVSTACK_APP_FIRSTROUTE (ovapp))
+			break;
+	}
 
-	if (!OVSTACK_NET_APP (ovnet, app)) 
-		OVSTACK_APP_NEXTNUM (app);
-
-	if (app == OVSTACK_APP_MAX - 1)
+	if (app == OVSTACK_APP_MAX)
 		goto out;
-
-	ovapp = OVSTACK_NET_APP (ovnet, app);
 
 	list_for_each_entry_rcu (ort, &ovapp->ortable_chain, chain) {
 		list_for_each_entry_rcu (ortnxt, &ort->ort_nxts, list) {
-			ovstack_nl_route_send (skb, NETLINK_CB (cb->skb).portid,
+			ovstack_nl_route_send (skb, 
+					       NETLINK_CB (cb->skb).portid,
 					       cb->nlh->nlmsg_seq, NLM_F_MULTI,
 					       OVSTACK_CMD_ROUTE_GET, app, 
 					       ortnxt);
 		}
 	}
 
-	cb->args[1] = app;
+	cb->args[1] = app + 1;
 
 out:
 	return skb->len;
@@ -2028,7 +2027,7 @@ ovstack_register_app_ops (struct net * net, int app, int (*app_recv_ops)
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ovstack_app * ovapp;
 
-	if (app - 1> OVSTACK_APP_MAX) 
+	if (app > OVSTACK_APP_MAX) 
 		return -EINVAL;
 
 	if (OVSTACK_NET_APP (ovnet, app)) {
@@ -2077,7 +2076,7 @@ ovstack_unregister_app_ops (struct net * net, int app)
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ovstack_app * ovapp;
 
-	if (app - 1 > OVSTACK_APP_MAX) 
+	if (app > OVSTACK_APP_MAX) 
 		return -EINVAL;
 
 	if (!OVSTACK_NET_APP (ovnet, app)) {

@@ -124,12 +124,12 @@ usage (void)
 		 "		[ addr ADDRESS ]\n"
 		 "		[ weight WEIGHT ]\n"
 		 "\n"
-		 "	ip ov route { add | del }\n"
+		 "	ip ov route { show | add | del }\n"
 		 "		[ app APPID ]\n"
-		 "              [ to NODEID ]\n"
-		 "              [ via NODEID ]\n"
+		 "		[ to NODEID ]\n"
+		 "		[ via NODEID ]\n"
 		 "\n"
-		 "	ip ov show { id | locator | node | route }\n"
+		 "	ip ov show { id | locator | node }\n"
 		 "		[ app APPID ]\n"
 		 "		[ id NODEID ]\n"
 		 "		[ addr ADDRESS ]\n"
@@ -587,7 +587,7 @@ locator_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 	inet_ntop (AF_INET, &node_id, addrbuf4, sizeof (addrbuf4));
 	inet_ntop (ai_family, addr, addrbuf6, sizeof (addrbuf6));
 
-	printf ("4%d", app_id);
+	printf ("%3d  ", app_id);
 	printf ("%s", addrbuf4);
 	print_offset (addrbuf4, NODE_ID_OFFSET);
 	printf ("%s", addrbuf6);
@@ -685,10 +685,11 @@ route_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 
 	printf ("%3d  ", app_id);
 	inet_ntop (AF_INET, &dst_node_id, addrbuf4, sizeof (addrbuf4));
-	print_offset (addrbuf4, ADDRESS_OFFSET);
-	printf (" via ");
+	printf ("%s", addrbuf4);
+	print_offset (addrbuf4, NODE_ID_OFFSET);
 	inet_ntop (AF_INET, &nxt_node_id, addrbuf4, sizeof (addrbuf4));
-	print_offset (addrbuf4, ADDRESS_OFFSET);
+	printf ("%s", addrbuf4);
+	print_offset (addrbuf4, NODE_ID_OFFSET);
 	printf ("\n");
 	
 	return 0;
@@ -729,6 +730,7 @@ do_show_locator (int argc, char ** argv)
 	if (rtnl_send (&genl_rth, &req, req.n.nlmsg_len) < 0)	
 		return -2;
 
+	printf ("App  ");
 	printf ("Node id");
 	print_offset ("Node id", NODE_ID_OFFSET);
 	printf ("Locator address");
@@ -755,6 +757,7 @@ do_show_node (int argc, char ** argv)
 	if (rtnl_send (&genl_rth, &req, req.n.nlmsg_len) < 0)	
 		return -2;
 
+	printf ("App  ");
 	printf ("Node id");
 	print_offset ("Node id", NODE_ID_OFFSET);
 	printf ("Locator address");
@@ -771,26 +774,6 @@ do_show_node (int argc, char ** argv)
 
 
 static int
-do_show_route (int argc, char ** argv)
-{
-	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
-		      OVSTACK_CMD_ROUTE_GET,
-		      NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST);
-
-	req.n.nlmsg_seq = genl_rth.dump = ++genl_rth.seq;
-
-	if (rtnl_send (&genl_rth, &req, req.n.nlmsg_len) < 0)
-		return -2;
-
-	if (rtnl_dump_filter (&genl_rth, route_nlmsg, NULL) < 0) {
-		fprintf (stderr, "Dump terminated\n");
-		return -1;
-	}
-
-	return 0;
-}
-
-static int
 do_show (int argc, char ** argv)
 {
 	if (argc < 1) {
@@ -804,10 +787,34 @@ do_show (int argc, char ** argv)
 		return do_show_locator (argc - 1, argv + 1);
 	if (strcmp (*argv, "node") == 0) 
 		return do_show_node (argc - 1, argv + 1);
-	if (strcmp (*argv, "route") == 0)
-		return do_show_route (argc - 1, argv + 1);
 	else {
 		fprintf (stderr, "unknwon command \"%s\".\n", *argv);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int
+do_route_show (int argc, char ** argv)
+{
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_ROUTE_GET,
+		      NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST);
+
+	req.n.nlmsg_seq = genl_rth.dump = ++genl_rth.seq;
+
+	if (rtnl_send (&genl_rth, &req, req.n.nlmsg_len) < 0)
+		return -2;
+
+	printf ("App  ");
+	printf ("Destination");
+	print_offset ("Destination", NODE_ID_OFFSET);
+	printf ("Next hop");
+	print_offset ("Next hop", NODE_ID_OFFSET);
+	printf ("\n");
+	if (rtnl_dump_filter (&genl_rth, route_nlmsg, NULL) < 0) {
+		fprintf (stderr, "Dump terminated\n");
 		return -1;
 	}
 
@@ -894,6 +901,8 @@ do_route (int argc, char ** argv)
 		return do_route_del (argc - 1, argv + 1);
 	if (strcmp (*argv, "delete") == 0) 
 		return do_route_del (argc - 1, argv + 1);
+	if (strcmp (*argv, "show") == 0)
+		return do_route_show (argc - 1, argv + 1);
 	else {
 		fprintf (stderr, "unknown command \"%s\".\n", *argv);
 		return -1;
