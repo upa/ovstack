@@ -152,11 +152,12 @@ struct ovstack_app {
 #define OVSTACK_APP_NEXTNUM(app)					\
 	do {								\
 		int _n;							\
-		for (_n = app + 1; _n < OVSTACK_APP_MAX; _n++)		\
+		for (_n = app + 1; _n < OVSTACK_APP_MAX; _n++) {	\
 			if (n) {					\
 				app = _n;				\
 				break;					\
 			}						\
+		}							\
 	} while (0)							\
 
 
@@ -1579,7 +1580,7 @@ ovstack_nl_cmd_app_id_dump (struct sk_buff * skb,
 			     cb->nlh->nlmsg_seq, NLM_F_MULTI,
 			     OVSTACK_CMD_APP_ID_GET, ovapp);
 
-	cb->args[1] = app;
+	cb->args[1] = app + 1;
 out:
 	return skb->len;
 }
@@ -1607,7 +1608,7 @@ ovstack_nl_cmd_node_id_dump (struct sk_buff * skb,
 			     cb->nlh->nlmsg_seq, NLM_F_MULTI,
 			     OVSTACK_CMD_NODE_ID_GET, ovapp);
 
-	cb->args[1] = app;
+	cb->args[1] = app + 1;
 out:
 	return skb->len;
 }
@@ -1700,14 +1701,7 @@ ovstack_nl_cmd_locator_dump (struct sk_buff * skb,
 				    cb->nlh->nlmsg_seq,  NLM_F_MULTI,
 				    OVSTACK_CMD_LOCATOR_GET, app, ownnode);
 
-	for (n = app; n < OVSTACK_APP_MAX; n++) {
-		if (n) {
-			app = n;
-			break;
-		} 
-	}
-
-	cb->args[1] = app;
+	cb->args[1] = app + 1;
 out:
 	return skb->len;
 }
@@ -1743,6 +1737,14 @@ ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 	ret = ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).portid,
 				    cb->nlh->nlmsg_seq, NLM_F_ACK, 
 				    OVSTACK_CMD_LOCATOR_GET, app, node);
+
+	if (node == OVSTACK_APP_LASTNODE (ovapp)) {
+		app++;
+		node_id = 0;
+	} else {
+		node = OV_NODE_NEXT (node);
+		node_id = node->node_id;
+	}
 
 	cb->args[1] = app;
 	cb->args[2] = node_id;

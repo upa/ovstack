@@ -113,22 +113,24 @@ usage (void)
 	fprintf (stderr,
 		 "\n"
 		 "Usage:  ip ov [ { add | del } ] [ locator | node ]\n"
+		 "		[ app APPID ]\n"
 		 "		[ id NODEID ]\n"
 		 "		[ addr ADDRESS ]\n"
 		 "		[ weight WEIGHT ]\n"
 		 "\n"
 		 "	ip ov set { id | locator | node }\n"
+		 "		[ app APPID ]\n"
 		 "		[ id NODEID ]\n"
 		 "		[ addr ADDRESS ]\n"
 		 "		[ weight WEIGHT ]\n"
 		 "\n"
-		 "      ip ov route { add | del }\n"
-		 "              [ app APPID ]"
+		 "	ip ov route { add | del }\n"
+		 "		[ app APPID ]\n"
 		 "              [ to NODEID ]\n"
 		 "              [ via NODEID ]\n"
 		 "\n"
 		 "	ip ov show { id | locator | node | route }\n"
-		 "              [ app APPID ]"
+		 "		[ app APPID ]\n"
 		 "		[ id NODEID ]\n"
 		 "		[ addr ADDRESS ]\n"
 		 "\n"
@@ -369,7 +371,6 @@ do_set_id (int argc, char ** argv)
 
 	parse_args (argc, argv, &p);
 
-	
 	if (!p.app_id_flag) {
 		fprintf (stderr, "application is not specified\n");
 		exit (-1);
@@ -501,7 +502,7 @@ do_set (int argc, char ** argv)
 	}
 
 	if (strcmp (*argv, "id") == 0)
-		return do_set_id (argc, argv);
+		return do_set_id (argc - 1, argv + 1);
 	if (strcmp (*argv, "locator") == 0) 
 		return do_set_locator (argc - 1, argv + 1);
 	if (strcmp (*argv, "node") == 0) 
@@ -634,7 +635,7 @@ id_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 	node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_NODE_ID]);
 	inet_ntop (AF_INET, &node_id, addrbuf4, sizeof (addrbuf4));
 
-	printf ("%4d %s\n", app_id, addrbuf4);
+	printf ("%3d  %s\n", app_id, addrbuf4);
 
 	return 0;
 }
@@ -682,7 +683,7 @@ route_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 	dst_node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_DST_NODE_ID]);
 	nxt_node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_NXT_NODE_ID]);
 
-	printf ("%4d ", app_id);
+	printf ("%3d  ", app_id);
 	inet_ntop (AF_INET, &dst_node_id, addrbuf4, sizeof (addrbuf4));
 	print_offset (addrbuf4, ADDRESS_OFFSET);
 	printf (" via ");
@@ -706,6 +707,8 @@ do_show_id (int argc, char ** argv)
 		return -2;
 	}
 	
+	printf ("App  Node id\n");
+
 	if (rtnl_dump_filter (&genl_rth, id_nlmsg, NULL) < 0) {
 		fprintf (stderr, "Dump terminated\n");
 		exit (1);
