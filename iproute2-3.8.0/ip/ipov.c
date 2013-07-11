@@ -30,13 +30,19 @@ static struct rtnl_handle genl_rth;
 static int genl_family = -1;
 
 struct ovstack_param {
+	__u8 app_id;
 	__u32 node_id;
+	__u32 dst_node_id;
+	__u32 nxt_node_id;
 	int ai_family;
 	struct in_addr addr4;
 	struct in6_addr addr6;
 	u_int8_t weight;
 	
+	int app_id_flag;
 	int node_id_flag;
+	int dst_node_id_flag;
+	int nxt_node_id_flag;
 	int addr_flag;
 	int weight_flag;
 
@@ -54,11 +60,18 @@ parse_args (int argc, char ** argv, struct ovstack_param * p)
 	memset (p, 0, sizeof (struct ovstack_param));
 
 	while (argc > 0) {
-		if (strcmp (*argv, "id") == 0) {
+		if (strcmp (*argv, "app") == 0) {
+			NEXT_ARG ();
+			if (get_u8 (&p->app_id, *argv, 0)) {
+				invarg ("invalid application\n", * argv);
+				exit (-1);
+			}
+			p->app_id_flag = 1;
+		} else if (strcmp (*argv, "id") == 0) {
 			NEXT_ARG ();
 			p->node_id = get_addr32 (*argv);
 			p->node_id_flag = 1;
-                } else if (strcmp (*argv, "addr") == 0) {
+		} else if (strcmp (*argv, "addr") == 0) {
 			NEXT_ARG ();
 			if (inet_pton (AF_INET, *argv, &(p->addr4)) > 0)
 				p->ai_family = AF_INET;
@@ -71,11 +84,19 @@ parse_args (int argc, char ** argv, struct ovstack_param * p)
 			p->addr_flag = 1;
 		} else if (strcmp (*argv, "weight") == 0) {
 			NEXT_ARG ();
-			if (get_u8 (&(p->weight), *argv,0 )) {
+			if (get_u8 (&(p->weight), *argv, 0)) {
 				invarg ("invalid weight\n", *argv);
 				exit (-1);
 			}
 			p->weight_flag = 1;
+		} else if (strcmp (*argv, "to") == 0) {
+			NEXT_ARG ();
+			p->dst_node_id = get_addr32 (*argv);
+			p->dst_node_id_flag = 1;
+		} else if (strcmp (*argv, "via") == 0) {
+			NEXT_ARG ();
+			p->nxt_node_id = get_addr32 (*argv);
+			p->nxt_node_id_flag = 1;
 		} 
 
 		argc--;
@@ -101,7 +122,13 @@ usage (void)
 		 "		[ addr ADDRESS ]\n"
 		 "		[ weight WEIGHT ]\n"
 		 "\n"
-		 "	ip ov show { id | locator | node }\n"
+		 "      ip ov route { add | del }\n"
+		 "              [ app APPID ]"
+		 "              [ to NODEID ]\n"
+		 "              [ via NODEID ]\n"
+		 "\n"
+		 "	ip ov show { id | locator | node | route }\n"
+		 "              [ app APPID ]"
 		 "		[ id NODEID ]\n"
 		 "		[ addr ADDRESS ]\n"
 		 "\n"
@@ -118,6 +145,10 @@ do_add_locator (int argc, char **argv)
 
 	parse_args (argc, argv, &p);
 
+	if (!p.app_id_flag) {
+		fprintf (stderr, "application is not specified\n");
+		exit (-1);
+	}
 	if (!p.addr_flag) {
 		fprintf (stderr, "address is not specified\n");
 		exit (-1);
@@ -125,6 +156,8 @@ do_add_locator (int argc, char **argv)
 
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
 		      OVSTACK_CMD_LOCATOR_ADD, NLM_F_REQUEST | NLM_F_ACK);
+
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_APP_ID, p.app_id);
 
 	switch (p.ai_family) {
 	case AF_INET :
@@ -157,6 +190,10 @@ do_add_node (int argc, char **argv)
 
 	parse_args (argc, argv, &p);
 
+	if (!p.app_id_flag) {
+		fprintf (stderr, "application is not specified\n");
+		exit (-1);
+	}
 	if (!p.addr_flag) {
 		fprintf (stderr, "address is not specified\n");
 		exit (-1);
@@ -166,10 +203,10 @@ do_add_node (int argc, char **argv)
 		exit (-1);
 	}
 
-
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
 		      OVSTACK_CMD_NODE_ADD, NLM_F_REQUEST | NLM_F_ACK);
 
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_APP_ID, p.app_id);
 	addattr32 (&req.n, 1024, OVSTACK_ATTR_NODE_ID, p.node_id);
 
 	switch (p.ai_family) {
@@ -224,6 +261,10 @@ do_del_locator (int argc, char **argv)
 
 	parse_args (argc, argv, &p);
 
+	if (!p.app_id_flag) {
+		fprintf (stderr, "application is not specified\n");
+		exit (-1);
+	}
 	if (!p.addr_flag) {
 		fprintf (stderr, "address is not specified\n");
 		exit (-1);
@@ -231,6 +272,8 @@ do_del_locator (int argc, char **argv)
 
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
 		      OVSTACK_CMD_LOCATOR_DELETE, NLM_F_REQUEST | NLM_F_ACK);
+
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_APP_ID, p.app_id);
 
 	switch (p.ai_family) {
 	case AF_INET :
@@ -260,6 +303,10 @@ do_del_node (int argc, char **argv)
 
 	parse_args (argc, argv, &p);
 
+	if (!p.app_id_flag) {
+		fprintf (stderr, "aplication is not specified\n");
+		exit (-1);
+	}
 	if (!p.addr_flag) {
 		fprintf (stderr, "address is not specified\n");
 		exit (-1);
@@ -272,6 +319,7 @@ do_del_node (int argc, char **argv)
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
 		      OVSTACK_CMD_NODE_DELETE, NLM_F_REQUEST | NLM_F_ACK);
 
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_APP_ID, p.app_id);
 	addattr32 (&req.n, 1024, OVSTACK_ATTR_NODE_ID, p.node_id);
 
 	switch (p.ai_family) {
@@ -321,6 +369,11 @@ do_set_id (int argc, char ** argv)
 
 	parse_args (argc, argv, &p);
 
+	
+	if (!p.app_id_flag) {
+		fprintf (stderr, "application is not specified\n");
+		exit (-1);
+	}
 	if (!p.node_id_flag) {
 		fprintf (stderr, "node id is not specified\n");
 		exit (-1);
@@ -329,6 +382,7 @@ do_set_id (int argc, char ** argv)
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
 		      OVSTACK_CMD_NODE_ID_SET, NLM_F_REQUEST | NLM_F_ACK);
 
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_APP_ID, p.app_id);
 	addattr32 (&req.n, 1024, OVSTACK_ATTR_NODE_ID, p.node_id);
 
 	if (rtnl_talk (&genl_rth, &req.n, 0, 0, NULL) < 0)
@@ -344,6 +398,10 @@ do_set_locator (int argc, char ** argv)
 
 	parse_args (argc, argv, &p);
 
+	if (!p.app_id_flag) {
+		fprintf (stderr, "application is not specified\n");
+		return -1;
+	}
 	if (!p.addr_flag) {
 		fprintf (stderr, "address is not specified\n");
 		return -1;
@@ -356,6 +414,8 @@ do_set_locator (int argc, char ** argv)
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
 		      OVSTACK_CMD_LOCATOR_WEIGHT_SET, 
 		      NLM_F_REQUEST | NLM_F_ACK);
+
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_APP_ID, p.app_id);
 
 	switch (p.ai_family) {
 	case AF_INET :
@@ -387,6 +447,10 @@ do_set_node (int argc, char ** argv)
 
 	parse_args (argc, argv, &p);
 
+	if (!p.app_id_flag) {
+		fprintf (stderr, "application is not specified\n");
+		return -1;
+	}
 	if (!p.node_id_flag) {
 		fprintf (stderr, "node id is not specified\n");
 		return -1;
@@ -403,6 +467,7 @@ do_set_node (int argc, char ** argv)
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
 		      OVSTACK_CMD_NODE_WEIGHT_SET, NLM_F_REQUEST | NLM_F_ACK);
 
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_APP_ID, p.app_id);
 	addattr32 (&req.n, 1024, OVSTACK_ATTR_NODE_ID, p.node_id);
 
 	switch (p.ai_family) {
@@ -464,7 +529,7 @@ static int
 locator_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 {
 	int len, ai_family = 0;
-	__u8 weight;
+	__u8 app_id, weight;
 	__u32 node_id;
 	__u32 addr[4];
 	char addrbuf4[16], addrbuf6[64];
@@ -486,6 +551,10 @@ locator_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 	parse_rtattr (attrs, OVSTACK_ATTR_MAX, 
 		      (void *)ghdr + GENL_HDRLEN, len);
 
+	if (!attrs[OVSTACK_ATTR_APP_ID]) {
+		fprintf (stderr, "%s: empty app id\n", __func__);
+		return -1;
+	}
 	if (!attrs[OVSTACK_ATTR_NODE_ID]) {
 		fprintf (stderr, "%s: empty node id\n", __func__);
 		return -1;
@@ -509,12 +578,15 @@ locator_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 		return -2;
 	}
 		
+	app_id = rta_getattr_u8 (attrs[OVSTACK_ATTR_APP_ID]);
+
 	node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_NODE_ID]);
 
 	weight = rta_getattr_u8 (attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]);
 	inet_ntop (AF_INET, &node_id, addrbuf4, sizeof (addrbuf4));
 	inet_ntop (ai_family, addr, addrbuf6, sizeof (addrbuf6));
 
+	printf ("4%d", app_id);
 	printf ("%s", addrbuf4);
 	print_offset (addrbuf4, NODE_ID_OFFSET);
 	printf ("%s", addrbuf6);
@@ -528,6 +600,7 @@ static int
 id_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 {
 	int len;
+	__u8 app_id;
 	__u32 node_id;
 	char addrbuf4[16];
 	struct genlmsghdr * ghdr;
@@ -548,16 +621,75 @@ id_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 	parse_rtattr (attrs, OVSTACK_ATTR_MAX, 
 		      (void *) ghdr + GENL_HDRLEN, len);
 
+	if (!attrs[OVSTACK_ATTR_APP_ID]) {
+		fprintf (stderr, "%s: empty app id\n", __func__);
+		return -1;
+	}
 	if (!attrs[OVSTACK_ATTR_NODE_ID]) {
 		fprintf (stderr, "%s: empty node id\n", __func__);
 		return -1;
 	}
 
+	app_id = rta_getattr_u8 (attrs[OVSTACK_ATTR_APP_ID]);
 	node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_NODE_ID]);
 	inet_ntop (AF_INET, &node_id, addrbuf4, sizeof (addrbuf4));
 
-	printf ("%s\n", addrbuf4);
+	printf ("%4d %s\n", app_id, addrbuf4);
 
+	return 0;
+}
+
+static int
+route_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
+{
+	int len;
+	char addrbuf4[16];
+	__u8 app_id;
+	__u32 dst_node_id, nxt_node_id;
+	struct genlmsghdr * ghdr;
+	struct rtattr * attrs[OVSTACK_ATTR_MAX + 1];
+
+
+	if (n->nlmsg_type == NLMSG_ERROR) {
+		fprintf (stderr, "%s: nlmsg_error\n", __func__);
+		return -EBADMSG;
+	}
+
+	ghdr = NLMSG_DATA (n);
+	len = n->nlmsg_len - NLMSG_LENGTH (sizeof (*ghdr));
+	if (len < 0) {
+		fprintf (stderr, "%s: nlmsg length error\n", __func__);
+		return -1;
+	}
+
+	parse_rtattr (attrs, OVSTACK_ATTR_MAX, 
+		      (void *) ghdr + GENL_HDRLEN, len);
+
+	if (!attrs[OVSTACK_ATTR_APP_ID]) {
+		fprintf (stderr, "%s: emptu app id\n", __func__);
+		return -1;
+	}
+	if (!attrs[OVSTACK_ATTR_DST_NODE_ID]) {
+		fprintf (stderr, "%s: empty destination node id\n", __func__);
+		return -1;
+	}
+	if (!attrs[OVSTACK_ATTR_NXT_NODE_ID]) {
+		fprintf (stderr, "%s: empty next hop node id\n", __func__);
+		return -1;
+	}
+	
+	app_id = rta_getattr_u8 (attrs[OVSTACK_ATTR_APP_ID]);
+	dst_node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_DST_NODE_ID]);
+	nxt_node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_NXT_NODE_ID]);
+
+	printf ("%4d ", app_id);
+	inet_ntop (AF_INET, &dst_node_id, addrbuf4, sizeof (addrbuf4));
+	print_offset (addrbuf4, ADDRESS_OFFSET);
+	printf (" via ");
+	inet_ntop (AF_INET, &nxt_node_id, addrbuf4, sizeof (addrbuf4));
+	print_offset (addrbuf4, ADDRESS_OFFSET);
+	printf ("\n");
+	
 	return 0;
 }
 
@@ -628,7 +760,28 @@ do_show_node (int argc, char ** argv)
 
 	if (rtnl_dump_filter (&genl_rth, locator_nlmsg, NULL) < 0) {
 		fprintf (stderr, "Dump terminated\n");
-		exit (1);
+		return -1;
+	}
+
+	return 0;
+}
+
+
+static int
+do_show_route (int argc, char ** argv)
+{
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_ROUTE_GET,
+		      NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST);
+
+	req.n.nlmsg_seq = genl_rth.dump = ++genl_rth.seq;
+
+	if (rtnl_send (&genl_rth, &req, req.n.nlmsg_len) < 0)
+		return -2;
+
+	if (rtnl_dump_filter (&genl_rth, route_nlmsg, NULL) < 0) {
+		fprintf (stderr, "Dump terminated\n");
+		return -1;
 	}
 
 	return 0;
@@ -648,15 +801,103 @@ do_show (int argc, char ** argv)
 		return do_show_locator (argc - 1, argv + 1);
 	if (strcmp (*argv, "node") == 0) 
 		return do_show_node (argc - 1, argv + 1);
+	if (strcmp (*argv, "route") == 0)
+		return do_show_route (argc - 1, argv + 1);
 	else {
 		fprintf (stderr, "unknwon command \"%s\".\n", *argv);
-		exit (-1);
+		return -1;
 	}
 
 	return 0;
 }
 
+static int
+do_route_add (int argc, char ** argv)
+{
+	struct ovstack_param p;
 
+	parse_args (argc, argv, &p);
+
+	if (!p.app_id_flag) {
+		fprintf (stderr, "application is not specified\n");
+		exit (-1);
+	}
+	if (!p.dst_node_id_flag) {
+		fprintf (stderr, "destination node id is not specified\n");
+		exit (-1);
+	}
+	if (!p.nxt_node_id_flag) {
+		fprintf (stderr, "next hop node id is not specified\n");
+		exit (-1);
+	}
+
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_ROUTE_ADD, NLM_F_REQUEST | NLM_F_ACK);
+
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_APP_ID, p.app_id);
+	addattr32 (&req.n, 1024, OVSTACK_ATTR_DST_NODE_ID, p.dst_node_id);
+	addattr32 (&req.n, 1024, OVSTACK_ATTR_NXT_NODE_ID, p.nxt_node_id);
+	
+	if (rtnl_talk (&genl_rth, &req.n, 0, 0, NULL) < 0)
+		return -2;
+
+	return 0;
+}
+
+static int
+do_route_del (int argc, char ** argv)
+{
+	struct ovstack_param p;
+
+	parse_args (argc, argv, &p);
+
+	if (!p.app_id_flag) {
+		fprintf (stderr, "application is not specified\n");
+		exit (-1);
+	}
+	if (!p.dst_node_id_flag) {
+		fprintf (stderr, "destination node id is not specified\n");
+		exit (-1);
+	}
+	if (!p.nxt_node_id_flag) {
+		fprintf (stderr, "next hop node id is not specified\n");
+		exit (-1);
+	}
+
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_ROUTE_DELETE, NLM_F_REQUEST | NLM_F_ACK);
+
+	addattr8 (&req.n, 1024, OVSTACK_ATTR_APP_ID, p.app_id);
+	addattr32 (&req.n, 1024, OVSTACK_ATTR_DST_NODE_ID, p.dst_node_id);
+	addattr32 (&req.n, 1024, OVSTACK_ATTR_NXT_NODE_ID, p.nxt_node_id);
+	
+	if (rtnl_talk (&genl_rth, &req.n, 0, 0, NULL) < 0)
+		return -2;
+
+	return 0;
+}
+
+static int
+do_route (int argc, char ** argv)
+{
+	if (argc < 1) {
+		fprintf (stderr, "invalid argument.\n");
+		return -1;
+	}
+
+	if (strcmp (*argv, "add") == 0)
+		return do_route_add (argc - 1, argv + 1);
+	if (strcmp (*argv, "del") == 0) 
+		return do_route_del (argc - 1, argv + 1);
+	if (strcmp (*argv, "delete") == 0) 
+		return do_route_del (argc - 1, argv + 1);
+	else {
+		fprintf (stderr, "unknown command \"%s\".\n", *argv);
+		return -1;
+	}
+
+	return 0;
+}
 
 int
 do_ipov (int argc, char **argv)
@@ -689,6 +930,9 @@ do_ipov (int argc, char **argv)
 
 	if (matches (*argv, "show") == 0)
 		return do_show (argc - 1, argv + 1);
+
+	if (matches (*argv, "route") == 0)
+		return do_route (argc -1, argv + 1);
 
 	if (matches (*argv, "help") == 0)
 		usage ();

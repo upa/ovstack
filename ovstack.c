@@ -1585,8 +1585,37 @@ out:
 }
 
 static int
+ovstack_nl_cmd_node_id_dump (struct sk_buff * skb,
+			    struct netlink_callback * cb)
+{
+	int n;
+	u8 app;
+	struct net * net = sock_net (skb->sk);
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp;
+
+	app = cb->args[1];
+
+	if (!OVSTACK_NET_APP (ovnet, app))
+		OVSTACK_APP_NEXTNUM (app);
+
+	if (app == OVSTACK_APP_MAX - 1)
+		goto out;
+
+	ovapp = OVSTACK_NET_APP (ovnet, app);
+	ovstack_nl_app_send (skb, NETLINK_CB (cb->skb).portid,
+			     cb->nlh->nlmsg_seq, NLM_F_MULTI,
+			     OVSTACK_CMD_NODE_ID_GET, ovapp);
+
+	cb->args[1] = app;
+out:
+	return skb->len;
+}
+
+
+static int
 ovstack_nl_locator_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
-		int cmd, struct ov_locator * loc)
+			 int cmd, u8 app, struct ov_locator * loc)
 {
 	void * hdr;
 	struct ov_node * node;
@@ -1600,7 +1629,8 @@ ovstack_nl_locator_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
 	if (IS_ERR (hdr))
 		PTR_ERR (hdr);
 
-	if (nla_put_be32 (skb, OVSTACK_ATTR_NODE_ID, node->node_id) ||
+	if (nla_put_u8 (skb, OVSTACK_ATTR_APP_ID, app) ||
+	    nla_put_be32 (skb, OVSTACK_ATTR_NODE_ID, node->node_id) ||
 	    nla_put_u8 (skb, OVSTACK_ATTR_LOCATOR_WEIGHT, loc->weight))
 		goto err_out;
 
@@ -1629,7 +1659,7 @@ err_out:
 
 static int
 ovstack_nl_node_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
-			 int cmd, struct ov_node * node)
+		      int cmd, u8 app, struct ov_node * node)
 {
 	struct ov_locator * loc;
 
@@ -1637,10 +1667,10 @@ ovstack_nl_node_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
 		return 0;
 
 	list_for_each_entry_rcu (loc, &(node->ipv4_locator_list), list) 
-		ovstack_nl_locator_send (skb, pid, seq, flags, cmd, loc);
+		ovstack_nl_locator_send (skb, pid, seq, flags, cmd, app, loc);
 
 	list_for_each_entry_rcu (loc, &(node->ipv6_locator_list), list) 
-		ovstack_nl_locator_send (skb, pid, seq, flags, cmd, loc);
+		ovstack_nl_locator_send (skb, pid, seq, flags, cmd, app, loc);
 
 	return 0;
 }
@@ -1668,7 +1698,7 @@ ovstack_nl_cmd_locator_dump (struct sk_buff * skb,
 	ownnode = OVSTACK_APP_OWNNODE (ovapp);
 	ret = ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).portid,
 				    cb->nlh->nlmsg_seq,  NLM_F_MULTI,
-				    OVSTACK_CMD_LOCATOR_GET, ownnode);
+				    OVSTACK_CMD_LOCATOR_GET, app, ownnode);
 
 	for (n = app; n < OVSTACK_APP_MAX; n++) {
 		if (n) {
@@ -1712,7 +1742,7 @@ ovstack_nl_cmd_node_dump (struct sk_buff * skb, struct netlink_callback * cb)
 
 	ret = ovstack_nl_node_send (skb, NETLINK_CB (cb->skb).portid,
 				    cb->nlh->nlmsg_seq, NLM_F_ACK, 
-				    OVSTACK_CMD_LOCATOR_GET, node);
+				    OVSTACK_CMD_LOCATOR_GET, app, node);
 
 	cb->args[1] = app;
 	cb->args[2] = node_id;
@@ -1818,7 +1848,8 @@ ovstack_nl_route_send (struct sk_buff * skb, u32 pid, u32 seq, int flags,
 		PTR_ERR (hdr);
 
 	if (nla_put_u8 (skb, OVSTACK_ATTR_APP_ID, app) ||
-	    nla_put_be32 (skb, OVSTACK_ATTR_DST_NODE_ID, ortnxt->ort_nxt_dst) ||
+	    nla_put_be32 (skb, OVSTACK_ATTR_DST_NODE_ID, 
+			  ortnxt->ort_nxt_dst) ||
 	    nla_put_be32 (skb, OVSTACK_ATTR_NXT_NODE_ID, ortnxt->ort_nxt)) 
 		goto err_out;
 
@@ -1924,6 +1955,11 @@ static struct genl_ops ovstack_nl_ops[] = {
 	{
 		.cmd = OVSTACK_CMD_APP_ID_GET,
 		.dumpit = ovstack_nl_cmd_app_id_dump,
+		.policy = ovstack_nl_policy,
+	},
+	{
+		.cmd = OVSTACK_CMD_NODE_ID_GET,
+		.dumpit = ovstack_nl_cmd_node_id_dump,
 		.policy = ovstack_nl_policy,
 	},
 	{
