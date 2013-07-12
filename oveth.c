@@ -29,7 +29,7 @@
 #include "ovstack.h"
 #include "oveth.h"
 
-#define OVETH_VERSION "0.0.1"
+#define OVETH_VERSION "0.0.2"
 
 MODULE_VERSION (OVETH_VERSION);
 MODULE_LICENSE ("GPL");
@@ -47,6 +47,9 @@ MODULE_ALIAS_RTNL_LINK ("oveth");
 /* IP + UDP + OVHDR + Ethernet */
 #define OVETH_IPV4_HEADROOM (20 + 8 + 16 + 14)
 #define OVETH_IPV6_HEADROOM (40 + 8 + 16 + 14)
+
+/* OVHDR + Ethernet */
+#define OVETH_HEADROOM (16 + 14)
 
 static u32 oveth_salt __read_mostly;
 
@@ -251,328 +254,75 @@ oveth_fdb_del_node (struct oveth_fdb * f, __be32 node_id)
  *	net_device_ops related
  *************************************/
 
-#if 0
-static void
-oveth_sock_free (struct sk_buff * skb)
-{
-	sock_put (skb->sk);
-	return;
-}
-
-static void
-oveth_set_owner (struct net_device * dev, struct sk_buff * skb)
-{
-	struct oveth_net * ovnet = net_generic (dev_net (dev), oveth_net_id);
-	struct sock * sk = ovnet->sock->sk;
-
-	skb_orphan (skb);
-	sock_hold (sk);
-	skb->sk = sk;
-	skb->destructor = oveth_sock_free;
-
-	return;
-}
-#endif
-
-static inline netdev_tx_t
-oveth_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
-		     struct in_addr * saddr, struct in_addr * daddr, 
-		     __be32 node_id, u8 ttl)
+static netdev_tx_t
+oveth_xmit (struct sk_buff * skb, struct net_device * dev)
 {
 	int rc;
-	struct iphdr * iph;
-	struct udphdr * uh;
-	struct ovhdr * ovh;
-	struct flowi4 fl4;
-	struct rtable * rt;
-	struct oveth_dev * oveth = netdev_priv (dev);
-	unsigned int pkt_len = skb->len;
-
-	memset (&fl4, 0, sizeof (fl4));
-	fl4.flowi4_oif = 0;
-	fl4.flowi4_tos = 0;
-	fl4.saddr = *((__be32 *)(saddr));
-	fl4.daddr = *((__be32 *)(daddr));
-
-	rt = ip_route_output_key (dev_net (dev), &fl4);
-	if (IS_ERR (rt)) {
-		netdev_dbg (dev, "no route to %pI4\n", daddr);
-		dev->stats.tx_carrier_errors++;
-		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
-		return NETDEV_TX_OK;
-	}
-
-	if (rt->dst.dev == dev)  {
-		netdev_dbg (dev, "circular route to %pI4\n", daddr);
-		ip_rt_put (rt);
-		dev->stats.collisions++;
-		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
-		return NETDEV_TX_OK;
-	}
-
-	memset (&(IPCB (skb)->opt), 0, sizeof (IPCB (skb)->opt));
-	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED |
-			      IPSKB_REROUTED);
-
-	skb_dst_drop (skb);
-	skb_dst_set (skb, &rt->dst);
-
-	/* setup ovly header, udp header, ip header */
-	if (skb_cow_head (skb, OVETH_IPV4_HEADROOM)) {
-		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
-		return NETDEV_TX_OK;
-	}
-
-	ovh = (struct ovhdr *) __skb_push (skb, sizeof (struct ovhdr));
-	ovh->ov_version		= OVSTACK_HEADER_VERSION;
-	ovh->ov_protocol	= OVSTACK_PROTO_ETHER;
-	ovh->ov_ttl		= ttl;
-	ovh->ov_flags		= 0;
-	ovh->ov_vni		= htonl (oveth->vni << 8);
-	ovh->ov_dst		= node_id;
-	ovh->ov_src		= ovstack_own_node_id (dev_net (dev));
-
-	__skb_push (skb, sizeof (struct udphdr));
-	skb_reset_transport_header (skb);
-	uh		= udp_hdr (skb);
-	uh->dest	= htons (OVSTACK_PORT);
-	uh->source     	= htons (OVSTACK_PORT);
-	uh->len		= htons (skb->len);
-	uh->check	= 0;
-
-	__skb_push (skb, sizeof (struct iphdr));
-	skb_reset_network_header (skb);
-	iph		= ip_hdr (skb);
-	iph->version	= 4;
-	iph->ihl	= sizeof (struct iphdr) >> 2;
-	iph->frag_off	= 0;
-	iph->protocol	= IPPROTO_UDP;
-	iph->tos	= 0;
-	iph->saddr	= *((__be32 *)(saddr));
-	iph->daddr	= *((__be32 *)(daddr));
-	iph->ttl	= 16;
-
-	ovstack_set_owner (dev_net (dev), skb);
-
-	skb->ip_summed = CHECKSUM_NONE;
-	skb->pkt_type = PACKET_HOST;
-
-	rc = ip_local_out (skb);
-
-	if (net_xmit_eval (rc) == 0) {
-		struct oveth_stats * stats = this_cpu_ptr (oveth->stats);
-		u64_stats_update_begin (&stats->syncp);
-		stats->tx_packets++;
-		stats->tx_bytes += pkt_len;
-		u64_stats_update_end (&stats->syncp);
-	} else {
-		dev->stats.tx_errors++;
-		dev->stats.tx_aborted_errors++;
-	}
-
-	return NETDEV_TX_OK;
-}
-
-static inline netdev_tx_t
-oveth_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
-		     struct in6_addr * saddr, struct in6_addr * daddr, 
-		     __be32 node_id, u8 ttl)
-{
-	int rc;
-	struct ipv6hdr * ip6h;
-	struct udphdr * uh;
-	struct ovhdr * ovh;
-	struct flowi6 fl6;
-	struct dst_entry * dst;
-	struct oveth_dev * oveth = netdev_priv (dev);
-	unsigned int pkt_len = skb->len;
-
-	memset (&fl6, 0, sizeof (fl6));
-	fl6.saddr = *saddr;
-	fl6.daddr = *daddr;
-
-	dst = ip6_route_output (dev_net (dev), skb->sk, &fl6);
-	if (dst->error) {
-		netdev_dbg (dev, "no route to %pI6\n", daddr);
-		dev->stats.tx_carrier_errors++;
-		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
-		return NETDEV_TX_OK;
-	}
-
-	if (dst->dev == dev) {
-		netdev_dbg (dev, "circular route to %pI6\n", daddr);
-		dst_free (dst);
-		dev->stats.collisions++;
-		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
-		return NETDEV_TX_OK;
-	}
-
-
-	memset (&(IPCB (skb)->opt), 0, sizeof (IPCB (skb)->opt));
-	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED |
-			      IPSKB_REROUTED);
-
-	skb_dst_drop (skb);
-	skb_dst_set (skb, dst);
-
-	/* setup ovly header, udp header, ip6 header */
-	if (skb_cow_head (skb, OVETH_IPV6_HEADROOM)) {
-		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
-		return NETDEV_TX_OK;
-	}
-
-
-	ovh = (struct ovhdr *) __skb_push (skb, sizeof (struct ovhdr));
-	ovh->ov_version		= OVSTACK_HEADER_VERSION;
-	ovh->ov_protocol	= OVSTACK_PROTO_ETHER;
-	ovh->ov_ttl		= ttl;
-	ovh->ov_flags		= 0;
-	ovh->ov_vni		= htonl (oveth->vni << 8);
-	ovh->ov_dst		= node_id;
-	ovh->ov_src		= ovstack_own_node_id (dev_net (dev));
-
-	__skb_push (skb, sizeof (struct udphdr));
-	skb_reset_transport_header (skb);
-	uh		= udp_hdr (skb);
-	uh->dest	= htons (OVSTACK_PORT);
-	uh->source     	= htons (OVSTACK_PORT);
-	uh->len		= htons (skb->len);
-	uh->check	= 0;
-
-	__skb_push (skb, sizeof (struct ipv6hdr));
-        skb_reset_network_header (skb);
-	ip6h                    = ipv6_hdr (skb);
-	ip6h->version           = 6;
-	ip6h->priority          = 0;
-	ip6h->flow_lbl[0]       = 0;
-	ip6h->flow_lbl[1]       = 0;
-	ip6h->flow_lbl[2]       = 0;
-	ip6h->payload_len       = htons (skb->len);
-	ip6h->nexthdr           = IPPROTO_UDP;
-	ip6h->daddr             = *daddr;
-	ip6h->saddr             = *saddr;
-	ip6h->hop_limit         = 16;
-
-
-	ovstack_set_owner (dev_net (dev), skb);
-
-	skb->pkt_type = PACKET_HOST;
-
-	rc = ip6_local_out (skb);
-
-	if (net_xmit_eval (rc) == 0) {
-		struct oveth_stats * stats = this_cpu_ptr (oveth->stats);
-		u64_stats_update_begin (&stats->syncp);
-		stats->tx_packets++;
-		stats->tx_bytes += pkt_len;
-		u64_stats_update_end (&stats->syncp);
-	} else {
-		dev->stats.tx_errors++;
-		dev->stats.tx_aborted_errors++;
-	}
-
-	return NETDEV_TX_OK;
-}
-
-static inline netdev_tx_t
-__oveth_xmit_to_node (struct sk_buff * skb, struct net_device * dev,
-			__be32 node_id, u8 ttl)
-{
-	int ret;
 	u32 hash;
-	u8 loc4count = 0, loc6count = 0, ai_family = 0;
-	struct net * net = dev_net (dev);
-	struct ethhdr * eth;
-
-	union addr {
-		struct in_addr addr4;
-		struct in6_addr addr6;
-	} src_addr, dst_addr;
-
-	eth = eth_hdr (skb);
-	hash = eth_hash (eth->h_dest);
-	loc4count = ovstack_ipv4_loc_count (net);
-	loc6count = ovstack_ipv6_loc_count (net);
-
-	/* src locator address */
-	if (loc4count && loc6count) 
-		ai_family = ovstack_src_loc (&src_addr, net, hash);
-	else if (loc4count) 
-		ai_family = ovstack_ipv4_src_loc (&src_addr, net, hash);
-	else if (loc6count)
-		ai_family = ovstack_ipv6_src_loc (&src_addr, net, hash);
-	else 
-		goto error_drop;
-
-	/* dst locator address */
-	if (ai_family == AF_INET) {
-		ret = ovstack_ipv4_dst_loc (&dst_addr, net, node_id, hash);
-		if (!ret)
-			goto error_drop;
-		oveth_xmit_ipv4_loc (skb, dev, &src_addr.addr4, 
-				     &dst_addr.addr4, node_id, ttl);
-	} else if (ai_family == AF_INET6) {
-		ret = ovstack_ipv6_dst_loc (&dst_addr, net, node_id, hash);
-		if (!ret)
-			goto error_drop;
-		oveth_xmit_ipv6_loc (skb, dev, &src_addr.addr6,
-				     &dst_addr.addr6, node_id, ttl);
-	}
-
-
-	return NETDEV_TX_OK;
-
-error_drop:
-	dev->stats.tx_errors++;
-	dev->stats.tx_aborted_errors++;
-	return NETDEV_TX_OK;
-}
-
-static inline netdev_tx_t
-__oveth_xmit (struct sk_buff * skb, struct net_device * dev, u8 ttl)
-{
 	struct sk_buff * mskb;
+	struct ovhdr * ovh;
 	struct ethhdr * eth;
 	struct oveth_fdb * f;
 	struct oveth_fdb_node * fn;
 	struct oveth_dev * oveth = netdev_priv (dev);
 
-	if (ttl == 0) {
-		return NETDEV_TX_OK;
-	}
-
 	skb_reset_mac_header (skb);
 	eth = eth_hdr (skb);
 	f = find_oveth_fdb_by_mac (oveth, eth->h_dest);
 	if (f == NULL) {
-		pr_debug ("%s: dst fdb entry does not exist\n", __func__);
+		pr_debug ("%s: dst fdb entry does not exist", __func__);
 		return NETDEV_TX_OK;
 	}
 
-	list_for_each_entry_rcu (fn, &(f->node_id_list), list) {
+	hash = eth_hash (eth->h_dest);
+
+	/* setup ovly header */
+	if (skb_cow_head (skb, OVETH_HEADROOM)) {
+		dev->stats.tx_dropped++;
+		dev_kfree_skb (skb);
+		return NETDEV_TX_OK;
+	}
+
+	ovh = (struct ovhdr *) __skb_push (skb, sizeof (struct ovhdr));
+	ovh->ov_version	= OVSTACK_HEADER_VERSION;
+	ovh->ov_ttl	= OVSTACK_TTL;
+	ovh->ov_app	= OVAPP_ETHERNET;
+	ovh->ov_flags	= 0;
+	ovh->ov_vni	= htonl (oveth->vni << 8);
+	ovh->ov_hash	= htonl (hash);
+	ovh->ov_dst	= 0;
+	ovh->ov_src	= ovstack_own_node_id (dev_net (dev), OVAPP_ETHERNET);
+
+	list_for_each_entry_rcu (fn, &f->node_id_list, list) {
+
 		mskb = skb_clone (skb, GFP_ATOMIC);
-		if (likely (mskb))
-			__oveth_xmit_to_node (mskb, dev, fn->node_id, ttl);
-		else {
+
+		if (unlikely (mskb)) {
+			dev->stats.tx_errors++;
+			dev->stats.tx_aborted_errors++;
+			list_for_each_entry_continue_rcu (fn, &f->node_id_list,
+							  list);
+		}
+
+		ovh = (struct ovhdr *) skb->data;
+		ovh->ov_dst = fn->node_id;
+		rc = ovstack_xmit (mskb, dev);
+
+		if (net_xmit_eval (rc) == 0) {
+			struct oveth_stats *stats = this_cpu_ptr (oveth->stats);
+			u64_stats_update_begin (&stats->syncp);
+			stats->tx_packets++;
+			stats->tx_bytes += mskb->len;
+			u64_stats_update_end (&stats->syncp);
+		} else {
 			dev->stats.tx_errors++;
 			dev->stats.tx_aborted_errors++;
 		}
 	}
+
 	dev_kfree_skb (skb);
 
 	return NETDEV_TX_OK;
-}
-
-static netdev_tx_t
-oveth_xmit (struct sk_buff * skb, struct net_device * dev)
-{
-	return __oveth_xmit (skb, dev, OVSTACK_TTL);
 }
 
 static int
@@ -609,9 +359,9 @@ oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	/* if destination node is not my node id, packet is forwarded.
 	   This process ought to be done in ovstack layer.
 	 */
-	node_id = ovstack_own_node_id (net);
+	node_id = ovstack_own_node_id (net, OVAPP_ETHERNET);
 	if (ovh->ov_dst != node_id) {
-		__oveth_xmit (skb, oveth->dev, ovh->ov_ttl - 1);
+		pr_debug ("%s: packet is not for me !", __func__);
 		goto not_rx;
 	}
 	
@@ -907,7 +657,7 @@ static struct nla_policy oveth_nl_policy[OVETH_ATTR_MAX + 1] = {
 
 
 static int
-oveth_nl_cmd_route_add (struct sk_buff * skb, struct genl_info * info)
+oveth_nl_cmd_fdb_add (struct sk_buff * skb, struct genl_info * info)
 {
 	__u32 vni;
 	__be32 node_id;
@@ -950,7 +700,7 @@ oveth_nl_cmd_route_add (struct sk_buff * skb, struct genl_info * info)
 }
 
 static int
-oveth_nl_cmd_route_delete (struct sk_buff * skb, struct genl_info * info)
+oveth_nl_cmd_fdb_delete (struct sk_buff * skb, struct genl_info * info)
 {
 	__u32 vni;
 	__be32 node_id;
@@ -1080,14 +830,14 @@ out:
 
 static struct genl_ops oveth_nl_ops[] = {
 	{
-		.cmd = OVETH_CMD_ROUTE_ADD,
-		.doit = oveth_nl_cmd_route_add,
+		.cmd = OVETH_CMD_FDB_ADD,
+		.doit = oveth_nl_cmd_fdb_add,
 		.policy = oveth_nl_policy,
 		.flags = GENL_ADMIN_PERM,
 	},
 	{
-		.cmd = OVETH_CMD_ROUTE_DELETE,
-		.doit = oveth_nl_cmd_route_delete,
+		.cmd = OVETH_CMD_FDB_DELETE,
+		.doit = oveth_nl_cmd_fdb_delete,
 		.policy = oveth_nl_policy,
 		.flags = GENL_ADMIN_PERM,
 	},
@@ -1108,7 +858,7 @@ static struct genl_ops oveth_nl_ops[] = {
 static __net_init int
 oveth_init_net (struct net * net)
 {
-	int n;
+	int rc, n;
 	struct oveth_net * ovnet = net_generic (net, oveth_net_id);
 
 	memset (ovnet, 0, sizeof (struct oveth_net));
@@ -1118,6 +868,14 @@ oveth_init_net (struct net * net)
 		INIT_LIST_HEAD (&(ovnet->vni_list[n]));
 	INIT_LIST_HEAD (&(ovnet->vni_chain));
 
+	/* register ovstack callback */
+	rc = ovstack_register_app_ops (net, OVAPP_ETHERNET,
+				       oveth_udp_encap_recv);
+	if (!rc) {
+		printk (KERN_ERR "failed to register as ovstack app\n");
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -1125,7 +883,14 @@ oveth_init_net (struct net * net)
 static __net_exit void
 oveth_exit_net (struct net * net)
 {
-	/* nothing to do (?) */
+	int rc;
+
+	rc = ovstack_unregister_app_ops (net, OVAPP_ETHERNET);
+	if (!rc) {
+		printk (KERN_ERR "failed to unregister as ovstack app\n");
+		return;
+	}
+
 	return;
 }
 
@@ -1170,8 +935,6 @@ __init oveth_init_module (void)
 	}
 
 	/* set OV_PROTO_ETHER recv ops */
-	ovstack_register_recv_ops (OVSTACK_PROTO_ETHER, oveth_udp_encap_recv);
-
 
 	printk (KERN_INFO "overlay ethernet deriver (version %s) is loaded\n",
 		OVETH_VERSION);
@@ -1184,7 +947,6 @@ module_init (oveth_init_module);
 static void
 __exit oveth_exit_module (void)
 {
-	ovstack_unregister_recv_ops (OVSTACK_PROTO_ETHER);
 	genl_unregister_family (&oveth_nl_family);
 	rtnl_link_unregister (&oveth_link_ops);
 	unregister_pernet_device (&oveth_net_ops);

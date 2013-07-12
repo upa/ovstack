@@ -25,15 +25,15 @@ enum {
 /*
  * Commands
  *
- * ROUTE_ADD			- vni, mac, node_id
- * ROUTE_DELETE			- vni, mac, node_id
+ * FDB_ADD			- vni, mac, node_id
+ * FDB_DELETE			- vni, mac, node_id
  * OVETH_CMD_FDB_GET		- (vni?)
  *
  */
 
 enum {
-	OVETH_CMD_ROUTE_ADD,		/* mac, vni, node_id */
-	OVETH_CMD_ROUTE_DELETE,		/* mac, vni, node_id */
+	OVETH_CMD_FDB_ADD,		/* mac, vni, node_id */
+	OVETH_CMD_FDB_DELETE,		/* mac, vni, node_id */
 	OVETH_CMD_FDB_GET,		/* none : vni, mac, node_id */
 	__OVETH_CMD_MAX,
 };

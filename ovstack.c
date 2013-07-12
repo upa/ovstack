@@ -965,7 +965,8 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 		return ovstack_xmit_ipv6_loc (skb, dev, &src_addr.addr6,
 					      &dst_addr.addr6);
 	} else  {
-		pr_debug ("%s: unknwon locator family %d", __func__, ai_family);
+		pr_debug ("%s: unknwon locator family %d", 
+			  __func__, ai_family);
 		goto error_drop;
 	}
 	
