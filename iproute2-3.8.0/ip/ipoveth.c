@@ -96,7 +96,7 @@ do_route_add (int argc, char ** argv)
 	}
 
 	GENL_REQUEST (req, 1024, genl_family, 0, OVETH_GENL_VERSION,
-		      OVETH_CMD_ROUTE_ADD, NLM_F_REQUEST | NLM_F_ACK);
+		      OVETH_CMD_FDB_ADD, NLM_F_REQUEST | NLM_F_ACK);
 
 	addattr32 (&req.n, 1024, OVETH_ATTR_VNI, p.vni);
 	addattr32 (&req.n, 1024, OVETH_ATTR_NODE_ID, p.node_id);
@@ -129,7 +129,7 @@ do_route_del (int argc, char **argv)
 	}
 
 	GENL_REQUEST (req, 1024, genl_family, 0, OVETH_GENL_VERSION,
-		      OVETH_CMD_ROUTE_DELETE, NLM_F_REQUEST | NLM_F_ACK);
+		      OVETH_CMD_FDB_DELETE, NLM_F_REQUEST | NLM_F_ACK);
 
 	addattr32 (&req.n, 1024, OVETH_ATTR_VNI, p.vni);
 	addattr32 (&req.n, 1024, OVETH_ATTR_NODE_ID, p.node_id);
