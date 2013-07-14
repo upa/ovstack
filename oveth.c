@@ -270,7 +270,10 @@ oveth_xmit (struct sk_buff * skb, struct net_device * dev)
 	eth = eth_hdr (skb);
 	f = find_oveth_fdb_by_mac (oveth, eth->h_dest);
 	if (f == NULL) {
-		pr_debug ("%s: dst fdb entry does not exist", __func__);
+		pr_debug ("%s: dst fdb entry does not exist. "
+			  "%02x:%02x:%02x:%02x:%02x:%02x", __func__,
+			  eth->h_dest[0], eth->h_dest[1], eth->h_dest[2], 
+			  eth->h_dest[3], eth->h_dest[4], eth->h_dest[5]);
 		return NETDEV_TX_OK;
 	}
 
@@ -511,9 +514,9 @@ oveth_ndo_fdb_add (struct ndmsg * ndm, struct nlattr * tb[],
 	}
 
 	fn = oveth_fdb_find_node (f, node_id);
-	if (f == NULL) 
+	if (fn == NULL) 
 		oveth_fdb_add_node (f, node_id);
-	else
+	else 
 		return -EEXIST;
 
 	return 0;
@@ -543,34 +546,88 @@ oveth_ndo_fdb_delete (struct ndmsg * ndm, struct net_device * dev,
 	return 0;
 }
 
+static int
+oveth_fdb_info (struct sk_buff * skb, struct oveth_dev * oveth,
+		const struct oveth_fdb_node * fn, 
+		u32 portid, u32 seq, int type, unsigned int flags)
+{
+	//unsigned long now = jiffies;
+	struct nda_cacheinfo ci;
+	struct nlmsghdr * nlh;
+	struct ndmsg * ndm;
+	bool send_ip, send_eth;
 
-static int oveth_nl_fdb_node_send (struct sk_buff * skb, u32 pid, u32 seq, 
-				   int flags, int cmd, u32 vni, 
-				   struct oveth_fdb_node * fn);
+	nlh = nlmsg_put (skb, portid, seq, type, sizeof (*ndm), flags);
+	if (nlh == NULL)
+		return -EMSGSIZE;
+
+	ndm = nlmsg_data (nlh);
+	memset (ndm, 0, sizeof (*ndm));
+
+	send_eth = send_ip = true;
+
+	if (type == RTM_GETNEIGH) {
+		ndm->ndm_family = AF_INET;
+		send_ip = fn->node_id != 0;
+		send_eth = !is_zero_ether_addr (fn->fdb->eth_addr);
+	} else
+		ndm->ndm_family = AF_BRIDGE;
+
+	/* fake state ... */
+	ndm->ndm_state = (NUD_PERMANENT | NUD_REACHABLE);
+	ndm->ndm_ifindex = oveth->dev->ifindex;
+	ndm->ndm_flags = NTF_SELF;
+	ndm->ndm_type = NDA_DST;
+
+	if (send_eth && nla_put (skb, NDA_LLADDR, ETH_ALEN, 
+				 &fn->fdb->eth_addr))
+		goto nla_put_failure;
+	
+	if (send_ip && nla_put_be32 (skb, NDA_DST, fn->node_id))
+		goto nla_put_failure;
+
+	/*
+	ci.ndm_used		= jiffies_to_clock_t (now - fn->used);
+	ci.ndm_updated		= jiffies_to_clock_t (now - fn->updated);
+	*/
+	ci.ndm_confirmed	= 0;
+	ci.ndm_refcnt		= 0;
+
+	if (nla_put (skb, NDA_CACHEINFO, sizeof (ci), &ci))
+		goto nla_put_failure;
+	
+	return nlmsg_end (skb, nlh);
+
+nla_put_failure:
+	nlmsg_cancel (skb, nlh);
+	return -EMSGSIZE;
+
+}
+
 
 static int
 oveth_ndo_fdb_dump (struct sk_buff * skb, struct netlink_callback * cb,
 		    struct net_device * dev, int idx)
 {
+	int err;
 	struct oveth_fdb * f;
 	struct oveth_fdb_node * fn;
 	struct oveth_dev * oveth = netdev_priv (dev);
 
-	list_for_each_entry_rcu (f, &(oveth->fdb_chain), chain) {
+	list_for_each_entry_rcu (f, &oveth->fdb_chain, chain) {
 		if (idx != cb->args[0])
 			goto skip;
 
 		list_for_each_entry_rcu (fn, &f->node_id_list, list) {
-			oveth_nl_fdb_node_send (skb,
-						NETLINK_CB (cb->skb).portid,
-						cb->nlh->nlmsg_seq,
-						NLM_F_MULTI, RTM_NEWNEIGH,
-						oveth->vni, fn);
+			err = oveth_fdb_info (skb, oveth, fn,
+					      NETLINK_CB (cb->skb).portid,
+					      cb->nlh->nlmsg_seq,
+					      RTM_NEWNEIGH, NLM_F_MULTI);
+			if (err < 0)
+				break;
 		}
-		break;
 	skip:
 		idx++;
-		
 	}
 
 	return idx;
