@@ -300,11 +300,11 @@ oveth_xmit (struct sk_buff * skb, struct net_device * dev)
 
 		mskb = skb_clone (skb, GFP_ATOMIC);
 
-		if (unlikely (mskb)) {
+		if (unlikely (!mskb)) {
 			dev->stats.tx_errors++;
 			dev->stats.tx_aborted_errors++;
-			list_for_each_entry_continue_rcu (fn, &f->node_id_list,
-							  list);
+			printk (KERN_ERR "oveth: failed to alloc skb\n");
+			goto skip;
 		}
 
 		ovh = (struct ovhdr *) skb->data;
@@ -322,6 +322,7 @@ oveth_xmit (struct sk_buff * skb, struct net_device * dev)
 			dev->stats.tx_errors++;
 			dev->stats.tx_aborted_errors++;
 		}
+	skip:;
 	}
 
 	dev_kfree_skb (skb);

@@ -990,6 +990,7 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 	struct ovstack_app * ovapp;
 	struct ortable * ort;
 	struct ortable_nexthop * ortnxt;
+	struct sk_buff * mskb;
 
 	ovh = (struct ovhdr *) skb->data;
 	ovapp = OVSTACK_NET_APP (ovnet, ovh->ov_app);
@@ -1007,9 +1008,19 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 	}
 
 	list_for_each_entry_rcu (ortnxt, &(ort->ort_nxts), list) {
+		mskb = skb_clone (skb, GFP_ATOMIC);
+
+		if (unlikely (!mskb)) {
+			dev->stats.tx_errors++;
+			dev->stats.tx_aborted_errors++;
+			printk (KERN_ERR "ovstack: failed to alloc skb\n");
+			goto skip;
+		}
+
 		ret = ovstack_xmit_node (skb, dev, ortnxt->ort_nxt);
 		if (ret != NETDEV_TX_OK)
 			return ret;
+	skip:;
 	}
 
 	return NETDEV_TX_OK;

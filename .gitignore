@@ -5,6 +5,7 @@
 .tmp*
 .*.swp
 reset.sh
+setup.sh
 refresh.sh
 modules.order
 Module.symvers
