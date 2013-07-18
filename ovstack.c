@@ -707,7 +707,7 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	 */
 
 	struct ovhdr * ovh;
-	struct net * net = sock_net (skb->sk);
+	struct net * net = sock_net (sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ovstack_app * ovapp;
 	struct ov_node * ownnode;
@@ -722,6 +722,8 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	}
 
 	ovh = (struct ovhdr *) skb->data;
+
+	printk (KERN_INFO "ov_app is %d", ovh->ov_app);
 
 	/* application check */
 	if (!OVSTACK_NET_APP (ovnet, ovh->ov_app)) {
