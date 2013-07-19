@@ -723,8 +723,6 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 
 	ovh = (struct ovhdr *) skb->data;
 
-	printk (KERN_INFO "ov_app is %d", ovh->ov_app);
-
 	/* application check */
 	if (!OVSTACK_NET_APP (ovnet, ovh->ov_app)) {
 		netdev_dbg (skb->dev, "unknown application %d\n", ovh->ov_app);
@@ -812,6 +810,7 @@ ovstack_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
 	iph		= ip_hdr (skb);
 	iph->version	= 4;
 	iph->ihl	= sizeof (struct iphdr) >> 2;
+	iph->frag_off	= 0;
 	iph->protocol	= IPPROTO_UDP;
 	iph->tos	= 0;
 	iph->saddr	= *((__be32 *)(saddr));
@@ -880,7 +879,7 @@ ovstack_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
 		return NETDEV_TX_OK;
 	}
 
-	__skb_push (skb, sizeof (struct udphdr)) ;
+	__skb_push (skb, sizeof (struct udphdr));
 	skb_reset_transport_header (skb);
 	uh 		= udp_hdr (skb);
 	uh->dest	= htons (OVSTACK_PORT);
@@ -972,8 +971,6 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 		goto error_drop;
 	}
 	
-	return NETDEV_TX_OK;
-
 error_drop:
 	dev->stats.tx_errors++;
 	dev->stats.tx_aborted_errors++;
@@ -1019,11 +1016,13 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 			goto skip;
 		}
 
-		ret = ovstack_xmit_node (skb, dev, ortnxt->ort_nxt);
-		if (ret != NETDEV_TX_OK)
+		ret = ovstack_xmit_node (mskb, dev, ortnxt->ort_nxt);
+		if (ret != NETDEV_TX_OK) 
 			return ret;
 	skip:;
 	}
+
+	dev_kfree_skb (skb);
 
 	return NETDEV_TX_OK;
 }

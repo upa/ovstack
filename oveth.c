@@ -307,7 +307,7 @@ oveth_xmit (struct sk_buff * skb, struct net_device * dev)
 			goto skip;
 		}
 
-		ovh = (struct ovhdr *) skb->data;
+		ovh = (struct ovhdr *) mskb->data;
 		ovh->ov_dst = fn->node_id;
 		rc = ovstack_xmit (mskb, dev);
 
@@ -616,7 +616,7 @@ oveth_ndo_fdb_dump (struct sk_buff * skb, struct netlink_callback * cb,
 	struct oveth_dev * oveth = netdev_priv (dev);
 
 	list_for_each_entry_rcu (f, &oveth->fdb_chain, chain) {
-		if (idx != cb->args[0])
+		if (idx < cb->args[0])
 			goto skip;
 
 		list_for_each_entry_rcu (fn, &f->node_id_list, list) {
@@ -742,8 +742,6 @@ oveth_newlink (struct net * net, struct net_device * dev,
 		list_add_rcu (&(oveth->list), vni_head (net, oveth->vni));
 		list_add_rcu (&(oveth->chain), &(ovnet->vni_chain));
 	}
-
-	pr_debug ("newlink, vni is %u\n", vni);
 
 	return rc;
 }
