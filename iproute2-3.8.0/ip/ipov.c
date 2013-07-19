@@ -129,7 +129,7 @@ usage (void)
 		 "		[ to NODEID ]\n"
 		 "		[ via NODEID ]\n"
 		 "\n"
-		 "	ip ov show { id | locator | node }\n"
+		 "	ip ov show { app | id | locator | node }\n"
 		 "		[ app APPID ]\n"
 		 "		[ id NODEID ]\n"
 		 "		[ addr ADDRESS ]\n"
@@ -696,6 +696,29 @@ route_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 }
 
 static int
+do_show_app (int argc, char ** argv)
+{
+	int ret;
+
+	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
+		      OVSTACK_CMD_APP_ID_GET, NLM_F_REQUEST | NLM_F_ROOT);
+
+	if ((ret = rtnl_send (&genl_rth, &req.n, req.n.nlmsg_len)) < 0) {
+		printf ("%d\n", ret);
+		return -2;
+	}
+	
+	printf ("App  Node id\n");
+
+	if (rtnl_dump_filter (&genl_rth, id_nlmsg, NULL) < 0) {
+		fprintf (stderr, "Dump terminated\n");
+		exit (1);
+	}
+
+	return 0;
+}
+
+static int
 do_show_id (int argc, char ** argv)
 {
 	int ret;
@@ -781,6 +804,8 @@ do_show (int argc, char ** argv)
 		return -1;
 	}
 
+	if (strcmp (*argv, "app") == 0) 
+		return do_show_app (argc - 1, argv + 1);
 	if (strcmp (*argv, "id") == 0)
 		return do_show_id (argc - 1, argv + 1);
 	if (strcmp (*argv, "locator") == 0)

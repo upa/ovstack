@@ -150,11 +150,11 @@ struct ovstack_app {
 	((app->node_chain.prev == &app->node_chain) ? NULL :	\
 	 (list_entry_rcu (app->node_chain.prev, struct ov_node, chain)))
 
-#define OVSTACK_APP_NEXTNUM(app)					\
+#define OVSTACK_APP_NEXTNUM(ovnet, app)					\
 	do {								\
 		int _n;							\
 		for (_n = app; _n < OVSTACK_APP_MAX; _n++) {	\
-			if (_n) {					\
+			if (OVSTACK_NET_APP (ovnet, _n)) {		\
 				app = _n;				\
 				break;					\
 			}						\
@@ -286,6 +286,9 @@ find_ov_locator_by_hash (struct ov_node * node, u32 hash, u8 ai_family)
 	struct list_head * li;
 	struct ov_locator * loc;
 
+	if (node->ipv4_locator_count == 0 && node->ipv6_locator_count == 0)
+		return NULL;
+
 	/* both */
 	if (ai_family == AF_UNSPEC) {
 		hash %= (node->ipv4_locator_weight_sum + 
@@ -306,16 +309,14 @@ find_ov_locator_by_hash (struct ov_node * node, u32 hash, u8 ai_family)
 	}
 
 	/* ipv4 or ipv6 */
-	if (ai_family == AF_INET) {
+	if (ai_family == AF_INET && node->ipv4_locator_count) {
 		li = &(node->ipv4_locator_list);
 		hash %=	node->ipv4_locator_weight_sum;
-	} else if (ai_family == AF_INET6) {
+	} else if (ai_family == AF_INET6 && node->ipv6_locator_count) {
 		li = &(node->ipv6_locator_list);
 		hash %=	node->ipv6_locator_weight_sum;
-	} else {
-		pr_debug ("%s: invalid ai family \"%d\"", __func__, ai_family);
+	} else 
 		return NULL;
-	}
 	
 	list_for_each_entry_rcu (loc, li, list) {
 		if (hash <= loc->weight)
@@ -775,15 +776,6 @@ ovstack_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
 		return NETDEV_TX_OK;
 	}
 	
-	if (rt->dst.dev == dev) {
-		netdev_dbg (dev, "circular route to %pI4\n", daddr);
-		ip_rt_put (rt);
-		dev->stats.collisions++;
-		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
-		return NETDEV_TX_OK;
-	}
-	
 	memset (&(IPCB (skb)->opt), 0, sizeof (IPCB (skb)->opt));
 	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED |
 			      IPSKB_REROUTED);
@@ -950,7 +942,7 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 	/* set dst locator address */
 	if (ai_family == AF_INET) {
 		ret = ovstack_ipv4_dst_loc (&dst_addr, net, ovh->ov_app,
-					    ovh->ov_dst, ovh->ov_hash);
+					    nxt, ovh->ov_hash);
 		if (!ret)
 			goto noroute_drop;
 
@@ -959,7 +951,7 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 
 	} else if (ai_family == AF_INET6) {
 		ret = ovstack_ipv6_dst_loc (&dst_addr, net, ovh->ov_app,
-					    ovh->ov_dst, ovh->ov_hash);
+					    nxt, ovh->ov_hash);
 		if (!ret)
 			goto noroute_drop;
 
@@ -1183,10 +1175,13 @@ ovstack_nl_cmd_locator_add (struct sk_buff * skb, struct genl_info * info)
 		return -EINVAL;
 	}
 
-	if (info->attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]) 
+	if (info->attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]) {
 		weight = nla_get_u8 (info->attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]);
-
-
+		if (weight == 0) {
+			pr_debug ("%s: weight must be lager than 0", __func__);
+			return -EINVAL;
+		}
+	}
 
 	/* add new locator */
 	ovapp = OVSTACK_NET_APP (ovnet, app);
@@ -1312,6 +1307,11 @@ ovstack_nl_cmd_locator_weight_set (struct sk_buff * skb,
 		return -EINVAL;
 	}
 	weight = nla_get_u8 (info->attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]);
+	if (weight == 0) {
+		pr_debug ("%s: weight must be larger than 0", __func__);
+		return -EINVAL;
+	}
+
 
 	/* set locator weight */
 	ovapp = OVSTACK_NET_APP (ovnet, app);
@@ -1374,9 +1374,13 @@ ovstack_nl_cmd_node_add (struct sk_buff * skb, struct genl_info * info)
 		return -EINVAL;
 	}
 
-	if (info->attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]) 
+	if (info->attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]) {
 		weight = nla_get_u8 (info->attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]);
-	
+		if (weight == 0) {
+			pr_debug ("%s: weight must be lager than 0", __func__);
+			return -EINVAL;
+		}
+	}
 
 	/* add new locator to node */
 	ovapp = OVSTACK_NET_APP (ovnet, app);
@@ -1530,6 +1534,10 @@ ovstack_nl_cmd_node_weight_set (struct sk_buff * skb, struct genl_info * info)
 		return -EINVAL;
 	}
 	weight = nla_get_u8 (info->attrs[OVSTACK_ATTR_LOCATOR_WEIGHT]);
+	if (weight == 0) {
+		pr_debug ("%s: weight must be lager than 0", __func__);
+		return -EINVAL;
+	}
 	
 
 	/* set weight */
@@ -1592,7 +1600,7 @@ ovstack_nl_cmd_app_id_dump (struct sk_buff * skb,
 	app = cb->args[1];
 
 	if (!OVSTACK_NET_APP (ovnet, app))
-		OVSTACK_APP_NEXTNUM (app);
+		OVSTACK_APP_NEXTNUM (ovnet, app);
 
 	if (app == OVSTACK_APP_MAX)
 		goto out;
@@ -1619,7 +1627,7 @@ ovstack_nl_cmd_node_id_dump (struct sk_buff * skb,
 	app = cb->args[1];
 
 	if (!OVSTACK_NET_APP (ovnet, app))
-		OVSTACK_APP_NEXTNUM (app);
+		OVSTACK_APP_NEXTNUM (ovnet, app);
 
 	if (app == OVSTACK_APP_MAX)
 		goto out;
