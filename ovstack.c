@@ -822,6 +822,8 @@ ovstack_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
 		dev->stats.tx_aborted_errors++;
 	}
 	
+	dev_kfree_skb (skb);
+
 	return NETDEV_TX_OK;
 }
 
@@ -904,6 +906,8 @@ ovstack_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
 		dev->stats.tx_errors++;
 		dev->stats.tx_aborted_errors++;
 	}
+
+	dev_kfree_skb (skb);
 
 	return NETDEV_TX_OK;
 }
@@ -999,7 +1003,10 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 	}
 
 	list_for_each_entry_rcu (ortnxt, &(ort->ort_nxts), list) {
-		mskb = skb_clone (skb, GFP_ATOMIC);
+		if (ort->ort_nxt_count > 1) 
+			mskb = skb_clone (skb, GFP_ATOMIC);
+		else 
+			mskb = skb;
 
 		if (unlikely (!mskb)) {
 			dev->stats.tx_errors++;
@@ -1014,7 +1021,7 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 	skip:;
 	}
 
-	dev_kfree_skb (skb);
+
 
 	return NETDEV_TX_OK;
 }
