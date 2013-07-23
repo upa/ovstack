@@ -37,6 +37,9 @@ MODULE_AUTHOR ("upa@haeena.net");
 MODULE_ALIAS_RTNL_LINK ("oveth");
 
 
+#define MIN_MTU		68
+#define MAX_MTU		65535
+
 #define VNI_MAX		0x00FFFFFF
 #define VNI_HASH_BITS	8
 #define FDB_HASH_BITS	8
@@ -622,13 +625,22 @@ oveth_ndo_fdb_dump (struct sk_buff * skb, struct netlink_callback * cb,
 	return idx;
 }
 
+static int
+oveth_change_mtu (struct net_device * dev, int new_mtu) 
+{
+	if (!(new_mtu >= MIN_MTU && new_mtu <= MAX_MTU))
+		return -EINVAL;
+	dev->mtu = new_mtu;
+	return 0;
+}
+
 static const struct net_device_ops oveth_netdev_ops = {
 	.ndo_init		= oveth_init,
 	.ndo_open		= oveth_open,
 	.ndo_stop		= oveth_stop,
 	.ndo_start_xmit		= oveth_xmit,
 	.ndo_get_stats64	= oveth_stats64,
-	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_change_mtu		= oveth_change_mtu,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,
 	.ndo_fdb_add		= oveth_ndo_fdb_add,
