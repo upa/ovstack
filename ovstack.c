@@ -772,7 +772,6 @@ ovstack_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
 		netdev_dbg (dev, "no route to %pI4\n", daddr);
 		dev->stats.tx_carrier_errors++;
 		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
 		return NETDEV_TX_OK;
 	}
 	
@@ -785,7 +784,6 @@ ovstack_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
 	/* setup udp header and ip header */
 	if (skb_cow_head (skb, OVSTACK_IPV4_HEADROOM)) {
 		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
 		return NETDEV_TX_OK;
 	}
 	
@@ -822,8 +820,6 @@ ovstack_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
 		dev->stats.tx_aborted_errors++;
 	}
 	
-	dev_kfree_skb (skb);
-
 	return NETDEV_TX_OK;
 }
 
@@ -846,7 +842,6 @@ ovstack_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
 		netdev_dbg (dev, "no route to %pI6\n", daddr);
 		dev->stats.tx_carrier_errors++;
 		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
 		return NETDEV_TX_OK;
 	}
 
@@ -855,7 +850,6 @@ ovstack_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
 		dst_free (dst);
 		dev->stats.collisions++;
 		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
 		return NETDEV_TX_OK;
 	}
 
@@ -869,7 +863,6 @@ ovstack_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
 	/* setup udp hdaer and ipv6 header */
 	if (skb_cow_head (skb, OVSTACK_IPV6_HEADROOM)) {
 		dev->stats.tx_dropped++;
-		dev_kfree_skb (skb);
 		return NETDEV_TX_OK;
 	}
 
@@ -906,8 +899,6 @@ ovstack_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
 		dev->stats.tx_errors++;
 		dev->stats.tx_aborted_errors++;
 	}
-
-	dev_kfree_skb (skb);
 
 	return NETDEV_TX_OK;
 }
