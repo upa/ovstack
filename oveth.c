@@ -334,54 +334,42 @@ static int
 oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 {
 	__u32 vni;
-	__be32 node_id;
 	struct ovhdr * ovh;
 	struct iphdr * oip;
 	struct net * net;
 	struct oveth_dev * oveth;
 	struct oveth_stats * stats;
 
-	/* outer udp header is already removed by ovstack */
-
+	/* outer udp header is already removed by ovstack. */
+	
 	ovh = (struct ovhdr *) skb->data;
 	vni = ntohl (ovh->ov_vni) >> 8;
 	net = sock_net (sk);
 	oveth = find_oveth_by_vni (net, vni);
 
+        __skb_pull (skb, sizeof (struct ovhdr));
+
 	/* vni check */
 	if (!oveth) {
 		netdev_dbg (skb->dev, "unknown vni %d\n", vni);
-		kfree_skb (skb);
-		return 0;
+		goto drop;
 	}
         if (!pskb_may_pull (skb, ETH_HLEN)) {
 		oveth->dev->stats.rx_length_errors++;
 		oveth->dev->stats.rx_errors++;
-		kfree_skb(skb);
-		return 0;
+		goto drop;
 	}
 
-	/* if destination node is not my node id, packet is forwarded.
-	   This process ought to be done in ovstack layer.
-	 */
-	node_id = ovstack_own_node_id (net, OVAPP_ETHERNET);
-	if (ovh->ov_dst != node_id) {
-		pr_debug ("%s: packet is not for me !", __func__);
-		goto not_rx;
-	}
-	
-	/* put off outer headers, and put packet up to upper layer */
-        __skb_pull (skb, sizeof (struct ovhdr));
 	skb_reset_mac_header (skb);
+
+	/* put off outer ov headers, and put packet up to upper layer. */
 	oip = ip_hdr (skb);
 	skb->protocol = eth_type_trans (skb, oveth->dev);
 
 	/* loop ? */
 	if (compare_ether_addr (eth_hdr(skb)->h_source,
-				oveth->dev->dev_addr) == 0) {
-		kfree_skb(skb);
-		return 0;
-	}
+				oveth->dev->dev_addr) == 0) 
+		goto drop;
 
 	__skb_tunnel_rx (skb, oveth->dev);
 	skb_reset_network_header (skb);
@@ -389,6 +377,11 @@ oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	if (skb->ip_summed != CHECKSUM_UNNECESSARY ||
 	    !(oveth->dev->features & NETIF_F_RXCSUM))
 		skb->ip_summed = CHECKSUM_NONE;
+
+	skb->encapsulation = 0;
+
+	/* in vxlan.c, ECN related code is implemented here. 
+	 mendoi kara atode iiya. */
 
 	stats = this_cpu_ptr(oveth->stats);
 	u64_stats_update_begin(&stats->syncp);
@@ -400,13 +393,8 @@ oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 
 	return 0;
 
-not_rx:
-	stats = this_cpu_ptr(oveth->stats);
-	u64_stats_update_begin(&stats->syncp);
-	stats->rx_packets++;
-	stats->rx_bytes += skb->len;
-	u64_stats_update_end(&stats->syncp);
-
+drop:
+	kfree_skb (skb);
 	return 0;
 }
 
