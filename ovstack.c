@@ -806,16 +806,6 @@ ovstack_udp_encap_mcast_recv (struct sock * sk, struct sk_buff * skb)
 	struct net * net = sock_net (sk);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ovstack_app * ovapp;
-	struct ov_node * ownnode;
-
-	/* pop off outer UDP header */
-	__skb_pull (skb, sizeof (struct udphdr));
-
-	/* need ov and inner ether header to present */
-	if (!pskb_may_pull (skb, sizeof (struct ovhdr))) {
-		skb_push (skb, sizeof (struct udphdr));
-		return 1;
-	}
 
 	ovh = (struct ovhdr *) skb->data;
 
@@ -825,7 +815,6 @@ ovstack_udp_encap_mcast_recv (struct sock * sk, struct sk_buff * skb)
 		return 0;
 	}
 	ovapp = OVSTACK_NET_APP (ovnet, ovh->ov_app);
-	ownnode = OVSTACK_APP_OWNNODE (ovapp);
 
 	/* do not check destination node id */
 
@@ -1097,6 +1086,23 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 
 	list_for_each_entry_rcu (ortnxt, &(ort->ort_nxts), list) {
 
+
+		/* mcast packet  */
+		if (OVSTACK_APP_OWNNODE (ovapp)->node_id != ovh->ov_src &&
+		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt) {
+			/* to me and not from me -> recv */
+			mskb = skb_copy (skb, GFP_KERNEL);
+			ovstack_udp_encap_mcast_recv (ovnet->sock->sk, mskb);
+			goto skip;
+		}
+
+		/* mcast echo */
+		if (OVSTACK_APP_OWNNODE (ovapp)->node_id == ovh->ov_src &&
+		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt) {
+			/* to me and from me -> drop */
+			goto skip;
+		}
+
 		if (ort->ort_nxt_count > 1) 
 			mskb = skb_clone (skb, GFP_ATOMIC);
 		else 
@@ -1108,24 +1114,6 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 			printk (KERN_ERR "ovstack: failed to alloc skb\n");
 			goto skip;
 		}
-
-		/* mcast packet  */
-		if (OVSTACK_APP_OWNNODE (ovapp)->node_id != ovh->ov_src &&
-		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt) {
-			/* to me and not from me -> recv */
-			ovstack_udp_encap_mcast_recv (ovnet->sock->sk, skb);
-			goto skip;
-		}
-
-		/* mcast echo */
-		if (OVSTACK_APP_OWNNODE (ovapp)->node_id == ovh->ov_src &&
-		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt) {
-			/* to me and from me -> drop */
-			goto skip;
-		}
-
-		printk (KERN_INFO "ovstack xmit: to %pI4, via %pI4\n",
-			&ovh->ov_dst, &ortnxt->ort_nxt);
 
 		ret = ovstack_xmit_node (mskb, dev, ortnxt->ort_nxt);
 
