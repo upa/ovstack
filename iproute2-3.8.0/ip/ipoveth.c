@@ -76,7 +76,7 @@ parse_args (int argc, char ** argv, struct oveth_param * p)
 
 
 static int
-do_route_add (int argc, char ** argv)
+do_fdb_add (int argc, char ** argv)
 {
 	struct oveth_param p;
 
@@ -109,7 +109,7 @@ do_route_add (int argc, char ** argv)
 }
 
 static int
-do_route_del (int argc, char **argv)
+do_fdb_del (int argc, char **argv)
 {
 	struct oveth_param p;
 
@@ -142,13 +142,13 @@ do_route_del (int argc, char **argv)
 }
 
 static int
-do_route (int argc, char ** argv)
+do_fdb (int argc, char ** argv)
 {
 	if (!matches (*argv, "add")) 
-		return do_route_add (argc - 1, argv + 1);
+		return do_fdb_add (argc - 1, argv + 1);
 
 	if (!matches (*argv, "delete") || !matches (*argv, "del"))
-		return do_route_del (argc -1, argv + 1);
+		return do_fdb_del (argc -1, argv + 1);
 	else 
 		fprintf (stderr, "unkwnon command \"%s\".\n", *argv);
 
@@ -251,6 +251,11 @@ do_show_fdb (int argc, char ** argv)
 static int
 do_show (int argc, char ** argv)
 {
+	if (argc < 1) {
+		fprintf (stderr, "invalid command arguments\n");
+		exit (-1);
+	}
+
 	if (!matches (*argv, "fdb"))
 		return do_show_fdb (argc - 1, argv + 1);
 	else
@@ -263,7 +268,7 @@ static void
 usage (void)
 {
 	fprintf (stderr, 
-		"Usage : ip oveth route { add | del }\n"
+		"Usage : ip oveth fdb { add | del }\n"
 		 "		[ vni VNI ]\n"
 		 "		[ to MACADDR ]\n"
 		 "		[ via NODEID ]\n"
@@ -291,8 +296,8 @@ do_ipoveth (int argc, char ** argv)
 	if (argc < 1)
 		usage ();
 
-	if (!matches (*argv, "route"))
-		return do_route (argc - 1, argv + 1);
+	if (!matches (*argv, "fdb"))
+		return do_fdb (argc - 1, argv + 1);
 
 	if (!matches (*argv, "show"))
 		return do_show (argc - 1, argv + 1);

@@ -993,6 +993,11 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 		return NETDEV_TX_OK;
 	}
 
+	if (!skb->encapsulation) {
+		skb_reset_inner_headers (skb);
+		skb->encapsulation = 1;
+	}
+
 	list_for_each_entry_rcu (ortnxt, &(ort->ort_nxts), list) {
 		if (ort->ort_nxt_count > 1) 
 			mskb = skb_clone (skb, GFP_ATOMIC);

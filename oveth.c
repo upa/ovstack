@@ -55,7 +55,7 @@ MODULE_ALIAS_RTNL_LINK ("oveth");
 #define OVETH_HEADROOM (16 + 14)
 
 static u32 oveth_salt __read_mostly;
-
+static u8  bcast_ethaddr[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
 struct oveth_fdb_node {
 	struct list_head	list;
@@ -272,13 +272,17 @@ oveth_xmit (struct sk_buff * skb, struct net_device * dev)
 	skb_reset_mac_header (skb);
 	eth = eth_hdr (skb);
 	f = find_oveth_fdb_by_mac (oveth, eth->h_dest);
-	if (f == NULL) {
-		pr_debug ("%s: dst fdb entry does not exist. "
-			  "%02x:%02x:%02x:%02x:%02x:%02x", __func__,
-			  eth->h_dest[0], eth->h_dest[1], eth->h_dest[2], 
-			  eth->h_dest[3], eth->h_dest[4], eth->h_dest[5]);
-		return NETDEV_TX_OK;
+	if (!f) {
+		f = find_oveth_fdb_by_mac (oveth, bcast_ethaddr);
+		if (!f) {
+			pr_debug ("%s: dst fdb entry does not exist. "
+				  "%02x:%02x:%02x:%02x:%02x:%02x", __func__,
+				  eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
+				  eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]);
+			return NETDEV_TX_OK;
+		}
 	}
+
 
 	hash = eth_hash (eth->h_dest);
 
