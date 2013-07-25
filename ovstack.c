@@ -752,6 +752,52 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	return ovapp->app_recv_ops (sk, skb);
 }
 
+static int
+ovstack_udp_encap_mcast_recv (struct sock * sk, struct sk_buff * skb)
+{
+	/*
+	 * Destination of packet is not for me. but send this packet to 
+	 * upper layer according to ov routing table.
+	 */
+
+	struct ovhdr * ovh;
+	struct net * net = sock_net (sk);
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp;
+	struct ov_node * ownnode;
+
+	/* pop off outer UDP header */
+	__skb_pull (skb, sizeof (struct udphdr));
+
+	/* need ov and inner ether header to present */
+	if (!pskb_may_pull (skb, sizeof (struct ovhdr))) {
+		skb_push (skb, sizeof (struct udphdr));
+		return 1;
+	}
+
+	ovh = (struct ovhdr *) skb->data;
+
+	/* application check */
+	if (!OVSTACK_NET_APP (ovnet, ovh->ov_app)) {
+		netdev_dbg (skb->dev, "unknown application %d\n", ovh->ov_app);
+		return 0;
+	}
+	ovapp = OVSTACK_NET_APP (ovnet, ovh->ov_app);
+	ownnode = OVSTACK_APP_OWNNODE (ovapp);
+
+	/* do not check destination node id */
+
+	/* callback function for overlay applicaitons */
+	if (ovapp->app_recv_ops == NULL) {
+		netdev_dbg (skb->dev, "application %d does not "
+			    "register callback function\n", ovh->ov_app);
+		return 0;
+	}
+
+	return ovapp->app_recv_ops (sk, skb);
+	
+}
+
 
 static inline netdev_tx_t
 ovstack_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
@@ -1008,13 +1054,24 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 			dev->stats.tx_errors++;
 			dev->stats.tx_aborted_errors++;
 			printk (KERN_ERR "ovstack: failed to alloc skb\n");
-			goto skip;
+			list_for_each_entry_continue_rcu (ortnxt, 
+							  &(ort->ort_nxts), 
+							  list);
+		}
+
+		/* mcast check */
+		if (OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt &&
+		    OVSTACK_APP_OWNNODE (ovapp)->node_id != ovh->ov_src) {
+			/* to me, and not from me */
+			ovstack_udp_encap_mcast_recv (ovnet->sock->sk, skb);
+			list_for_each_entry_continue_rcu (ortnxt, 
+							  &(ort->ort_nxts), 
+							  list);
 		}
 
 		ret = ovstack_xmit_node (mskb, dev, ortnxt->ort_nxt);
 		if (ret != NETDEV_TX_OK) 
 			return ret;
-	skip:;
 	}
 
 
