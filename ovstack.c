@@ -382,13 +382,13 @@ ov_locator_weight_set (struct ov_locator * loc, u8 weight)
  *** xmit related locator operations
  ***************************/
 
-void
+static void
 ovstack_sock_free (struct sk_buff * skb)
 {
 	sock_put (skb->sk);
 }
 
-void
+static void
 ovstack_set_owner (struct net * net, struct sk_buff * skb)
 {
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -400,7 +400,7 @@ ovstack_set_owner (struct net * net, struct sk_buff * skb)
 	skb->destructor = ovstack_sock_free;
 }
 
-int
+static int
 ovstack_ipv4_loc_count (struct net * net, u8 app)
 {
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -413,7 +413,7 @@ ovstack_ipv4_loc_count (struct net * net, u8 app)
 	return OVSTACK_APP_OWNNODE(ovapp)->ipv4_locator_count;
 }
 
-int
+static int
 ovstack_ipv6_loc_count (struct net * net, u8 app)
 {
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -426,7 +426,7 @@ ovstack_ipv6_loc_count (struct net * net, u8 app)
 	return OVSTACK_APP_OWNNODE(ovapp)->ipv6_locator_count;
 }
 
-int
+static int
 ovstack_src_loc (void * addr, struct net * net, u8 app, u32 hash)
 {
 	struct ov_locator * loc;
@@ -450,7 +450,8 @@ ovstack_src_loc (void * addr, struct net * net, u8 app, u32 hash)
 	return loc->remote_ip_family;
 }
 
-int
+#if 0
+static int
 ovstack_dst_loc (void * addr, struct net * net, u8 app, 
 		 __be32 node_id, u32 hash)
 {
@@ -478,8 +479,9 @@ ovstack_dst_loc (void * addr, struct net * net, u8 app,
 
 	return loc->remote_ip_family;
 }
+#endif
 
-int
+static int
 ovstack_ipv4_src_loc (void * addr, struct net * net, u8 app, u32 hash)
 {
 	struct ov_locator * loc;
@@ -500,7 +502,7 @@ ovstack_ipv4_src_loc (void * addr, struct net * net, u8 app, u32 hash)
 	return AF_INET;
 }
 
-int
+static int
 ovstack_ipv4_dst_loc (void * addr, 
 		      struct net * net, u8 app, __be32 node_id, u32 hash)
 {
@@ -529,7 +531,7 @@ ovstack_ipv4_dst_loc (void * addr,
 	return AF_INET;
 }
 
-int
+static int
 ovstack_ipv6_src_loc (void * addr, struct net * net, u8 app, u32 hash)
 {
 	struct ov_locator * loc;
@@ -550,7 +552,7 @@ ovstack_ipv6_src_loc (void * addr, struct net * net, u8 app, u32 hash)
 	return AF_INET6;
 }
 
-int
+static int
 ovstack_ipv6_dst_loc (void * addr, 
 		      struct net * net, u8 app, __be32 node_id, u32 hash)
 {
@@ -578,6 +580,42 @@ ovstack_ipv6_dst_loc (void * addr,
 
 	return AF_INET6;
 }
+
+static inline int
+ov_nexthop_rpf_check (struct sk_buff * skb, struct net * net, 
+		      u8 app, __be32 node_id)
+{
+	struct iphdr * iph;
+	struct ipv6hdr * ip6h;
+	struct ov_node * node;
+	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
+	struct ovstack_app * ovapp = OVSTACK_NET_APP (ovnet, app);
+
+	if (unlikely (!ovapp)) {
+		pr_debug ("%s: application %d does not exist", __func__, app);
+		return 0;
+	}
+
+	node = find_ov_node_by_id (ovapp, node_id);
+	if (!node)
+		return 0;
+
+	if (skb->protocol == ETH_P_IP) {
+		iph = (struct iphdr *) skb_network_header (skb);
+		if (find_ov_locator_by_addr (node, (__be32 *) &iph->saddr, 
+					     AF_INET))
+			return 1;
+	}else if (skb->protocol == ETH_P_IPV6) {
+		ip6h = (struct ipv6hdr *) skb_network_header (skb);
+		if (find_ov_locator_by_addr (node, (__be32 *) &ip6h->saddr, 
+					     AF_INET6))
+			return 1;
+	} else 
+		pr_debug ("%s: invalid protocol %d", __func__, skb->protocol);
+	
+	return 0;
+}
+
 
 
 /*****************************
@@ -737,6 +775,9 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 		ovh->ov_ttl--;
 		if (ovh->ov_ttl == 0) 
 			return 0;
+
+		if (!skb->encapsulation)
+			skb->encapsulation = 1;
 
 		ovstack_xmit (skb, skb->dev);
 		return 0;
@@ -964,6 +1005,20 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 
 	ovh = (struct ovhdr *) skb->data;
 
+
+	/* Nexthop only rpf check.
+	 * if a node that send this packet same as next hop node,
+	 * Dont't forward the packet. (for aovid multicast loop)
+	 */
+	if (skb->encapsulation && 
+	    ov_nexthop_rpf_check (skb, net, ovh->ov_app, nxt))
+		goto noroute_drop;
+
+	if (!skb->encapsulation) {
+		skb_reset_inner_headers (skb);
+		skb->encapsulation = 1;
+	}
+
 	loc4count = ovstack_ipv4_loc_count (net, ovh->ov_app);
 	loc6count = ovstack_ipv6_loc_count (net, ovh->ov_app);
 
@@ -1039,10 +1094,6 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 		return NETDEV_TX_OK;
 	}
 
-	if (!skb->encapsulation) {
-		skb_reset_inner_headers (skb);
-		skb->encapsulation = 1;
-	}
 
 	list_for_each_entry_rcu (ortnxt, &(ort->ort_nxts), list) {
 		if (ort->ort_nxt_count > 1) 
@@ -1059,10 +1110,11 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 							  list);
 		}
 
-		/* mcast check */
-		if (OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt &&
+		/* mcast echo check */
+		if (skb->encapsulation &&
+		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt &&
 		    OVSTACK_APP_OWNNODE (ovapp)->node_id != ovh->ov_src) {
-			/* to me, and not from me */
+			/* to me adn not from me */
 			ovstack_udp_encap_mcast_recv (ovnet->sock->sk, skb);
 			list_for_each_entry_continue_rcu (ortnxt, 
 							  &(ort->ort_nxts), 
@@ -1073,8 +1125,6 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 		if (ret != NETDEV_TX_OK) 
 			return ret;
 	}
-
-
 
 	return NETDEV_TX_OK;
 }
