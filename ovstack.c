@@ -780,6 +780,7 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 			skb->encapsulation = 1;
 
 		ovstack_xmit (skb, skb->dev);
+		dev_kfree_skb (skb);
 		return 0;
 	}
 
@@ -1095,6 +1096,7 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 
 
 	list_for_each_entry_rcu (ortnxt, &(ort->ort_nxts), list) {
+
 		if (ort->ort_nxt_count > 1) 
 			mskb = skb_clone (skb, GFP_ATOMIC);
 		else 
@@ -1104,25 +1106,33 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 			dev->stats.tx_errors++;
 			dev->stats.tx_aborted_errors++;
 			printk (KERN_ERR "ovstack: failed to alloc skb\n");
-			list_for_each_entry_continue_rcu (ortnxt, 
-							  &(ort->ort_nxts), 
-							  list);
+			goto skip;
 		}
 
-		/* mcast echo check */
-		if (skb->encapsulation &&
-		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt &&
-		    OVSTACK_APP_OWNNODE (ovapp)->node_id != ovh->ov_src) {
-			/* to me adn not from me */
+		/* mcast packet  */
+		if (OVSTACK_APP_OWNNODE (ovapp)->node_id != ovh->ov_src &&
+		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt) {
+			/* to me and not from me -> recv */
 			ovstack_udp_encap_mcast_recv (ovnet->sock->sk, skb);
-			list_for_each_entry_continue_rcu (ortnxt, 
-							  &(ort->ort_nxts), 
-							  list);
+			goto skip;
 		}
+
+		/* mcast echo */
+		if (OVSTACK_APP_OWNNODE (ovapp)->node_id == ovh->ov_src &&
+		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt) {
+			/* to me and from me -> drop */
+			goto skip;
+		}
+
+		printk (KERN_INFO "ovstack xmit: to %pI4, via %pI4\n",
+			&ovh->ov_dst, &ortnxt->ort_nxt);
 
 		ret = ovstack_xmit_node (mskb, dev, ortnxt->ort_nxt);
+
 		if (ret != NETDEV_TX_OK) 
 			return ret;
+
+	skip:;
 	}
 
 	return NETDEV_TX_OK;
