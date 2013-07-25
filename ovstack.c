@@ -1091,7 +1091,12 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 		if (OVSTACK_APP_OWNNODE (ovapp)->node_id != ovh->ov_src &&
 		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt) {
 			/* to me and not from me -> recv */
-			mskb = skb_copy (skb, GFP_KERNEL);
+			mskb = skb_copy (skb, GFP_ATOMIC);
+			if (!mskb) {
+				printk (KERN_INFO "ovstack : no buffer space "
+					"available for mcast packet\n");
+				goto skip;
+			}
 			ovstack_udp_encap_mcast_recv (ovnet->sock->sk, mskb);
 			goto skip;
 		}
