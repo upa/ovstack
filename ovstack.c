@@ -780,7 +780,6 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 			skb->encapsulation = 1;
 
 		ovstack_xmit (skb, skb->dev);
-		dev_kfree_skb (skb);
 		return 0;
 	}
 
@@ -1085,7 +1084,6 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 
 
 	list_for_each_entry_rcu (ortnxt, &(ort->ort_nxts), list) {
-
 
 		/* mcast packet  */
 		if (OVSTACK_APP_OWNNODE (ovapp)->node_id != ovh->ov_src &&
