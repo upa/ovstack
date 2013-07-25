@@ -600,12 +600,12 @@ ov_nexthop_rpf_check (struct sk_buff * skb, struct net * net,
 	if (!node)
 		return 0;
 
-	if (skb->protocol == ETH_P_IP) {
+	if (skb->protocol == htons (ETH_P_IP)) {
 		iph = (struct iphdr *) skb_network_header (skb);
 		if (find_ov_locator_by_addr (node, (__be32 *) &iph->saddr, 
 					     AF_INET))
 			return 1;
-	}else if (skb->protocol == ETH_P_IPV6) {
+	}else if (skb->protocol == htons (ETH_P_IPV6)) {
 		ip6h = (struct ipv6hdr *) skb_network_header (skb);
 		if (find_ov_locator_by_addr (node, (__be32 *) &ip6h->saddr, 
 					     AF_INET6))
@@ -1004,7 +1004,6 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 	} src_addr, dst_addr;
 
 	ovh = (struct ovhdr *) skb->data;
-
 
 	/* Nexthop only rpf check.
 	 * if a node that send this packet same as next hop node,
