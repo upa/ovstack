@@ -9,3 +9,4 @@ setup.sh
 refresh.sh
 modules.order
 Module.symvers
+*.out

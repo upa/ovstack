@@ -26,6 +26,7 @@
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
 
+
 #include "ovstack.h"
 #include "oveth.h"
 
@@ -59,7 +60,7 @@ MODULE_ALIAS_RTNL_LINK ("oveth");
 #define OVETH_UNDER_MAC_NOTIFY		60
 
 /* Aging interval */
-#define MAC_AGE_INTERVAL		(10 * HZ)
+#define MAC_AGE_INTERVAL		(5 * HZ)
 #define MAC_AGE_LIFETIME		(60 * HZ)
 
 static unsigned long oveth_event_seqnum __read_mostly;
@@ -404,6 +405,7 @@ aging_queue (struct list_head * queue)
 	return;
 }
 
+
 static void
 destroy_queue (struct list_head * queue)
 {
@@ -432,7 +434,7 @@ oveth_queue_cleanup (unsigned long arg)
 	spin_lock_bh (&oveth->unknown_q_lock);
 	aging_queue (&oveth->unknown_q);
 	spin_unlock_bh (&oveth->unknown_q_lock);
-	
+
 	/* aging under mac queue */
 	spin_lock_bh (&oveth->under_q_lock);
 	aging_queue (&oveth->under_q);
@@ -471,10 +473,12 @@ oveth_xmit (struct sk_buff * skb, struct net_device * dev)
 		oveth_notify_unknown_mac (oveth, (u8 *) eth->h_dest);
 		f = find_oveth_fdb_by_mac (oveth, bcast_ethaddr);
 		if (!f) {
+			/*
 			pr_debug ("%s: dst fdb entry does not exist. "
 				  "%02x:%02x:%02x:%02x:%02x:%02x", __func__,
 				  eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
 				  eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]);
+			*/
 			return NETDEV_TX_OK;
 		}
 	}
@@ -1035,7 +1039,6 @@ static struct genl_family oveth_nl_family = {
 	.id		= GENL_ID_GENERATE,
 	.name		= OVETH_GENL_NAME,
 	.version	= OVETH_GENL_VERSION,
-	.hdrsize	= 0,
 	.maxattr	= OVETH_ATTR_MAX,
 };
 
@@ -1224,6 +1227,13 @@ out:
 	return skb->len;
 }
 
+static int
+oveth_nl_cmd_event (struct sk_buff * skb, struct genl_info * info)
+{
+	/* nothing to do */
+	return skb->len;
+}
+
 static struct genl_ops oveth_nl_ops[] = {
 	{
 		.cmd = OVETH_CMD_FDB_ADD,
@@ -1244,21 +1254,31 @@ static struct genl_ops oveth_nl_ops[] = {
 		.policy = oveth_nl_policy,
 		/* anyone can show fdb entries  */
 	},
+	{
+		.cmd = OVETH_CMD_EVENT,
+		.doit = oveth_nl_cmd_event,
+		.policy = oveth_nl_policy,
+	},
 };
+
+
+void nlrecv (struct sk_buff * skb) {return;}
 
 static int
 oveth_nl_event_send (struct oveth_dev * oveth, u8 * mac, u8 type)
 {
-	int rc; 
+	int rc, size; 
 	void * hdr;
 	struct sk_buff * skb;
 	struct nlattr * attr;
 	struct oveth_genl_event * event;
 
-	/* under unknown destination mac address, via netlink */
+	/* notify under mac or unknown destination mac address via netlink */
 	
-	skb = genlmsg_new (sizeof (struct oveth_genl_event) +
-			   nla_total_size (0), GFP_ATOMIC);
+	size = nla_total_size (sizeof (struct oveth_genl_event)) +
+		nla_total_size (0);
+
+	skb = genlmsg_new (size, GFP_ATOMIC);
 
 	if (!skb)
 		return -ENOMEM;
@@ -1266,7 +1286,12 @@ oveth_nl_event_send (struct oveth_dev * oveth, u8 * mac, u8 type)
 	hdr = genlmsg_put (skb, 0, oveth_event_seqnum++, 
 			   &oveth_nl_family, 0, OVETH_CMD_EVENT);
 
-	attr = nla_reserve (skb, OVETH_ATTR_EVENT, 
+	if (IS_ERR (hdr)) {
+		nlmsg_free (skb);
+		return -ENOMEM;
+	}
+
+	attr = nla_reserve (skb, OVETH_ATTR_EVENT,
 			    sizeof (struct oveth_genl_event));
 
 	if (!attr) {
@@ -1274,14 +1299,13 @@ oveth_nl_event_send (struct oveth_dev * oveth, u8 * mac, u8 type)
 		return -EINVAL;
 	}
 
-	event = nla_data (attr);
+	event = (struct oveth_genl_event *) nla_data (attr);
 	if (!event) {
 		nlmsg_free (skb);
 		return -EINVAL;
 	}
 
 	memset (event, 0, sizeof (struct oveth_genl_event));
-
 	event->type = type;
 	event->app = OVAPP_ETHERNET;
 	event->vni = oveth->vni;
@@ -1293,12 +1317,17 @@ oveth_nl_event_send (struct oveth_dev * oveth, u8 * mac, u8 type)
 		return rc;
 	}
 
-	genlmsg_multicast (skb, 0, oveth_mc_group.id, GFP_ATOMIC);
+	NETLINK_CB(skb).portid = 0;
+	NETLINK_CB(skb).dst_group = 1;
 
-	pr_debug ("%s : send %d  mac %02x:%02x:%02x:%02x:%02x:%02x",
-		  __func__, type, 
+	rc = genlmsg_multicast (skb, 0, oveth_mc_group.id, GFP_ATOMIC);
+
+	pr_debug ("%s : send %d, rc %d, grp %d "
+		  "mac %02x:%02x:%02x:%02x:%02x:%02x",
+		  __func__, type, rc, NETLINK_CB (skb).dst_group,
 		  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
+	
 	return 0;
 }
 
@@ -1373,14 +1402,17 @@ __init oveth_init_module (void)
 	if (rc != 0)
 		goto error_out;
 
+
 	rc = rtnl_link_register (&oveth_link_ops);
 	if (rc != 0) 
 		goto link_failed;
+
 
 	rc = genl_register_family_with_ops (&oveth_nl_family, oveth_nl_ops,
 					    ARRAY_SIZE (oveth_nl_ops));
 	if (rc != 0) 
 		goto genl_failed;
+
 
 	rc = genl_register_mc_group (&oveth_nl_family, &oveth_mc_group);
 	if (rc != 0)
@@ -1392,15 +1424,9 @@ __init oveth_init_module (void)
 	return 0;
 
 
-genl_mc_failed :
-	genl_unregister_family (&oveth_nl_family);
-
-genl_failed :
-	rtnl_link_unregister (&oveth_link_ops);
-
-link_failed :
-	unregister_pernet_device (&oveth_net_ops);
-
+genl_mc_failed : genl_unregister_family (&oveth_nl_family);
+genl_failed :	 rtnl_link_unregister (&oveth_link_ops);
+link_failed :	 unregister_pernet_device (&oveth_net_ops);
 error_out :
 	return rc;
 
@@ -1415,7 +1441,7 @@ __exit oveth_exit_module (void)
 	rtnl_link_unregister (&oveth_link_ops);
 	unregister_pernet_device (&oveth_net_ops);
 
-	printk (KERN_INFO "overlay ethernet driver "
+		printk (KERN_INFO "overlay ethernet driver "
 		"(version %s) is unloaded)\n", OVETH_VERSION);
 
 	return;
