@@ -88,6 +88,7 @@ struct oveth_genl_event {
 struct oveth_genl_event {
 	u_int8_t        type;
 	u_int8_t        app;
+	u_int16_t	pad;
 	u_int32_t       vni;
 	u_int8_t        mac[ETH_ALEN];
 };

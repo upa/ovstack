@@ -9,6 +9,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/string.h>
+#include <linux/hashtable.h>
 #include <linux/in.h>
 #include <linux/inet.h>
 #include <linux/byteorder/generic.h>
@@ -44,6 +45,7 @@ MODULE_ALIAS_RTNL_LINK ("oveth");
 #define VNI_MAX		0x00FFFFFF
 #define VNI_HASH_BITS	8
 #define FDB_HASH_BITS	8
+#define MAC_HASH_BITS	8
 
 #define VNI_HASH_SIZE (1 << VNI_HASH_BITS)
 #define FDB_HASH_SIZE (1 << FDB_HASH_BITS)
@@ -126,6 +128,8 @@ struct oveth_dev {
 	spinlock_t		unknown_q_lock;
 	struct list_head 	unknown_q;	/* unknown dest mac queue */
 
+	DECLARE_HASHTABLE(mac_hash, 8);		/* hash for accommodated mac */
+
 	unsigned long		age_interval;
 	struct timer_list	age_timer;
 };
@@ -136,6 +140,18 @@ struct oveth_queue {
 
 	u8			mac[ETH_ALEN];
 	unsigned long 		update;	/* jiffies */
+};
+
+/* mac address hash table. 
+ * for queueing notify userland application via netlink 
+ * of unknwon dest/accommodated mac.
+ */
+struct oveth_hash {
+	struct hlist_head	hlist;
+	struct rcu_head		rcu;
+
+	u8			mac[ETH_ALEN];
+	unsigned long		update;	/* jiffies */
 };
 
 
@@ -279,6 +295,28 @@ oveth_fdb_del_node (struct oveth_fdb * f, __be32 node_id)
 	return;
 }
 
+
+/* oveth mac hash operations */
+
+static inline struct oveth_hash *
+find_hash (struct hlist_head * ht, u8 * mac)
+{
+	struct oveth_hash * oh;
+
+	hash_for_each_possible_rcu (ht, oh, hlist, mac) {
+		if (memcmp (oh->mac, mac, ETH_ALEN) == 0) {
+			return oh;
+		}
+	}
+
+	return NULL;
+}
+
+static inline void
+add_hash (struct hlist_head * ht, u8 * mac) 
+{
+	
+}
 
 /* oveth unknown dest notify queue operations */
 
@@ -970,6 +1008,8 @@ oveth_newlink (struct net * net, struct net_device * dev,
 	INIT_LIST_HEAD (&oveth->under_q);
 	INIT_LIST_HEAD (&oveth->unknown_q);
 
+	hash_init (oveth->mac_hash);
+
 	rc = register_netdevice (dev);
 	if (rc == 0) {
 		list_add_rcu (&(oveth->list), vni_head (net, oveth->vni));
@@ -1040,6 +1080,7 @@ static struct genl_family oveth_nl_family = {
 	.name		= OVETH_GENL_NAME,
 	.version	= OVETH_GENL_VERSION,
 	.maxattr	= OVETH_ATTR_MAX,
+	.hdrsize	= 0,
 };
 
 static struct nla_policy oveth_nl_policy[OVETH_ATTR_MAX + 1] = {
@@ -1227,13 +1268,6 @@ out:
 	return skb->len;
 }
 
-static int
-oveth_nl_cmd_event (struct sk_buff * skb, struct genl_info * info)
-{
-	/* nothing to do */
-	return skb->len;
-}
-
 static struct genl_ops oveth_nl_ops[] = {
 	{
 		.cmd = OVETH_CMD_FDB_ADD,
@@ -1251,12 +1285,6 @@ static struct genl_ops oveth_nl_ops[] = {
 		.cmd = OVETH_CMD_FDB_GET,
 		.doit = oveth_nl_cmd_fdb_get,
 		.dumpit = oveth_nl_cmd_fdb_dump,
-		.policy = oveth_nl_policy,
-		/* anyone can show fdb entries  */
-	},
-	{
-		.cmd = OVETH_CMD_EVENT,
-		.doit = oveth_nl_cmd_event,
 		.policy = oveth_nl_policy,
 	},
 };
@@ -1424,9 +1452,12 @@ __init oveth_init_module (void)
 	return 0;
 
 
-genl_mc_failed : genl_unregister_family (&oveth_nl_family);
-genl_failed :	 rtnl_link_unregister (&oveth_link_ops);
-link_failed :	 unregister_pernet_device (&oveth_net_ops);
+genl_mc_failed : 
+	genl_unregister_family (&oveth_nl_family);
+genl_failed :	 
+	rtnl_link_unregister (&oveth_link_ops);
+link_failed :	 
+	unregister_pernet_device (&oveth_net_ops);
 error_out :
 	return rc;
 
@@ -1441,7 +1472,7 @@ __exit oveth_exit_module (void)
 	rtnl_link_unregister (&oveth_link_ops);
 	unregister_pernet_device (&oveth_net_ops);
 
-		printk (KERN_INFO "overlay ethernet driver "
+	printk (KERN_INFO "overlay ethernet driver "
 		"(version %s) is unloaded)\n", OVETH_VERSION);
 
 	return;

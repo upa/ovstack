@@ -13,10 +13,37 @@
 
 #include "../oveth.h"
 
-
-struct nl_cb {
-	int a;
+struct oveth_event {
+	u_int8_t	type;
+	u_int8_t	app;
+	u_int32_t	vni;
+	u_int8_t	mac[ETH_ALEN];
 };
+
+
+void
+genlmsghdr_dump (struct genlmsghdr * gnlh)
+{
+	printf ("GENL MSG HEADER\n");
+	printf ("cmd : %u\n", gnlh->cmd);
+	printf ("version : %u\n", gnlh->version);
+	printf ("reserved : %u\n", gnlh->reserved);
+
+	return;
+}
+
+void
+nlmsghdr_dump (struct nlmsghdr * nlh)
+{
+	printf ("NLMSG HEADER\n");
+	printf ("length : %d\n", nlh->nlmsg_len);
+	printf ("type   : %d\n", nlh->nlmsg_type);
+	printf ("flags  : %x\n", nlh->nlmsg_flags);
+	printf ("seq    : %d\n", nlh->nlmsg_seq);
+	printf ("pid    : %d\n", nlh->nlmsg_pid);
+
+	return;
+}
 
 int
 main (int argc, char * argv[])
@@ -35,14 +62,7 @@ main (int argc, char * argv[])
 	oveth_group = genl_ctrl_resolve_grp (sk, OVETH_GENL_NAME, 
 					     OVETH_GENL_MC_GROUP);
 	
-	int acpi_group;
-	acpi_group = genl_ctrl_resolve_grp (sk, "acpi_event", "acpi_mc_group");
-
-	int vport_group;
-	vport_group = genl_ctrl_resolve_grp (sk, "ovs_vport", "ovs_vport");
-
-	printf ("family = %d, group = %d, vport_group = %d\n", 
-		oveth_family, oveth_group, vport_group);
+	printf ("family = %d, group = %d\n", oveth_family, oveth_group);
 
 	nl_socket_free (sk);
 
@@ -71,71 +91,50 @@ main (int argc, char * argv[])
 		return -1;
 	}
 
+
+	struct nlmsghdr * nlh;
+	struct genlmsghdr * gnlh;
+	struct oveth_event * event;
 	char buf[1024];
 
-	printf ("recv\n");
-	while (1) {
-		recv (fd, buf, sizeof (buf), 0);
-		printf ("uketotta !!! \n");
-	}
-
-
-
-
-
-
-#if 0
-	/*
-	sk = nl_socket_alloc ();
-	nl_join_groups (sk, 1);
-	if (nl_connect (sk, 17) != 0) {
-		printf ("nl_connect to NETLINK 17 failed\n");
-		return -1;
-	}
-
-	struct sockaddr_nl peer;
-	unsigned char *buf;
 
 	while (1) {
-		printf ("before nl recv\n");
-		nl_recv (sk, &peer, &buf, NULL);
-		printf ("aftre nl recv\n");
-	}
-
-	*/
-	int fd;
-	struct sockaddr_nl sa;
-
-	fd = socket (AF_NETLINK, SOCK_RAW, NETLINK_GENERIC);
-	memset (&sa, 0, sizeof (sa));
-	sa.nl_pid = 0;
-	sa.nl_family = AF_NETLINK;
-//	sa.nl_family = oveth_family;
-	sa.nl_groups = oveth_group;
-//	sa.nl_groups = 1;
-
-	if (bind (fd, (struct sockaddr *)&sa, sizeof (sa)) != 0) {
-		perror ("bind");
-		return -1;
-	}
-
-	struct {
-		struct nlmsghdr		n;
-		struct genlmsghdr	g;
-		char buf[1024];
-	} req;
-
-	while (1) {
-		n = recv (fd, &req, sizeof (req), 0);
-		printf ("recv!\n");
-		if (n < 0) {
-			perror ("recv");
-			return -1;
+		memset (&buf, 0, sizeof (buf));
+		n = recv (fd, &buf, sizeof (buf), 0);
+		printf ("received length is %d\n", n);
+		
+		nlh = (struct nlmsghdr *) buf;
+		if (!NLMSG_OK (nlh, n)) {
+			printf ("invalid nlmsg length\n");
 		}
 
+		gnlh = (struct genlmsghdr *) NLMSG_DATA (nlh);
+		event = (struct oveth_event *) (buf 
+						+ sizeof (struct nlmsghdr) 
+						+ sizeof (struct genlmsghdr)
+						+ 4);
+
+		nlmsghdr_dump (nlh);
+		genlmsghdr_dump (gnlh);
+
+		if (event->type == OVETH_EVENT_UNKNOWN_MAC) 
+			printf ("type : Unknwon Destination MAC\n");
+		else if (event->type == OVETH_EVENT_UNDER_MAC) 
+			printf ("type : New Accommodated MAC\n");
+		else 
+			printf ("type : unknown %d\n", event->type);
+		
+		printf ("app  : %d\n", event->app);
+		printf ("vni  : %d\n", event->vni);
+		printf ("mac  : %02x:%02x:%02x:%02x:%02x:%02x\n",
+			event->mac[0], event->mac[1], event->mac[2],
+			event->mac[3], event->mac[4], event->mac[5]);
+
+		printf ("\n");
 	}
 
-#endif
+
+
 	return 0;
 }
 
