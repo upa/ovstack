@@ -8,6 +8,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/version.h>
 #include <linux/string.h>
 #include <linux/hashtable.h>
 #include <linux/in.h>
@@ -58,11 +59,11 @@ MODULE_ALIAS_RTNL_LINK ("oveth");
 #define OVETH_HEADROOM (16 + 14)
 
 /* Notify interval */
-#define OVETH_UNKNOWN_MAC_NOTIFY	10
-#define OVETH_UNDER_MAC_NOTIFY		60
+#define OVETH_UNKNOWN_MAC_NOTIFY	20
+#define OVETH_UNDER_MAC_NOTIFY		20
 
 /* Aging interval */
-#define MAC_AGE_INTERVAL		(5 * HZ)
+#define MAC_AGE_INTERVAL		(10 * HZ)
 #define MAC_AGE_LIFETIME		(60 * HZ)
 
 static unsigned long oveth_event_seqnum __read_mostly;
@@ -111,6 +112,23 @@ struct oveth_stats {
 	struct u64_stats_sync	syncp;
 };
 
+/* mac address hash table. 
+ * for queueing notify userland application via netlink 
+ * of unknwon dest/accommodated mac.
+ */
+struct oveth_hashtable {
+	DECLARE_HASHTABLE (mac_hash, 6);       	/* hash for accommodated mac */
+};
+
+struct oveth_hash {
+	struct hlist_node	hlist;
+	struct rcu_head		rcu;
+
+	u8			mac[ETH_ALEN];
+	unsigned long		update;	/* jiffies */
+};
+
+
 /* psuedo network device */
 struct oveth_dev {
 	struct list_head	list;
@@ -123,35 +141,13 @@ struct oveth_dev {
 	struct list_head	fdb_chain;
 
 	spinlock_t		under_q_lock;
-	struct list_head	under_q;	/* mac addr under my dev  */
-
 	spinlock_t		unknown_q_lock;
-	struct list_head 	unknown_q;	/* unknown dest mac queue */
 
-	DECLARE_HASHTABLE(mac_hash, 8);		/* hash for accommodated mac */
+	struct oveth_hashtable	under_table;
+	struct oveth_hashtable 	unknown_table;
 
 	unsigned long		age_interval;
 	struct timer_list	age_timer;
-};
-
-struct oveth_queue {
-	struct list_head	list;
-	struct rcu_head		rcu;
-
-	u8			mac[ETH_ALEN];
-	unsigned long 		update;	/* jiffies */
-};
-
-/* mac address hash table. 
- * for queueing notify userland application via netlink 
- * of unknwon dest/accommodated mac.
- */
-struct oveth_hash {
-	struct hlist_head	hlist;
-	struct rcu_head		rcu;
-
-	u8			mac[ETH_ALEN];
-	unsigned long		update;	/* jiffies */
 };
 
 
@@ -298,102 +294,97 @@ oveth_fdb_del_node (struct oveth_fdb * f, __be32 node_id)
 
 /* oveth mac hash operations */
 
+static inline void 
+oveth_init_hashtable (struct oveth_hashtable * oht) 
+{
+	hash_init (oht->mac_hash);
+	return;
+}
+
+static inline void
+oveth_destroy_hashtable (struct oveth_hashtable * oht) 
+{
+	int bkt;
+	struct oveth_hash * h;
+	struct hlist_node * node, * tmp;
+
+	hash_for_each_safe (oht->mac_hash, bkt, node, tmp, h, hlist) {
+		hlist_del_rcu (&h->hlist);
+		kfree_rcu (h, rcu);
+	}
+
+	return;
+}
+
+
 static inline struct oveth_hash *
-find_hash (struct hlist_head * ht, u8 * mac)
+oveth_find_hash (struct oveth_hashtable * oht, u8 * mac)
 {
 	struct oveth_hash * oh;
+	struct hlist_node * node;
 
-	hash_for_each_possible_rcu (ht, oh, hlist, mac) {
-		if (memcmp (oh->mac, mac, ETH_ALEN) == 0) {
+	hash_for_each_possible_rcu (oht->mac_hash, oh, node, hlist, 
+				    (unsigned long) mac) {
+		if (memcmp (oh->mac, mac, ETH_ALEN) == 0) 
 			return oh;
-		}
 	}
 
 	return NULL;
 }
 
-static inline void
-add_hash (struct hlist_head * ht, u8 * mac) 
+static inline struct oveth_hash * 
+oveth_add_hash (struct oveth_hashtable * oht, u8 * mac) 
 {
-	
+	struct oveth_hash * oh;
+
+	oh = (struct oveth_hash *) kmalloc (sizeof (struct oveth_hash), 
+					    GFP_ATOMIC);
+	if (!oh) 
+		return NULL;
+		
+	memcpy (oh->mac, mac, sizeof (ETH_ALEN));
+	oh->update = jiffies;
+
+	hash_add_rcu (oht->mac_hash, &oh->hlist, (unsigned long) mac);
+
+	return oh;
+}
+
+static inline void
+oveth_delete_hash (struct oveth_hashtable * oht, u8 * mac)
+{
+	struct oveth_hash * oh;
+
+	oh = oveth_find_hash (oht, mac);
+	if (!oh) 
+		return;
+
+	hash_del_rcu (&oh->hlist);
+
+	return;
 }
 
 /* oveth unknown dest notify queue operations */
 
 static int oveth_nl_event_send (struct oveth_dev * oveth, u8 * mac, u8 type);
 
-static struct oveth_queue *
-find_queue (struct list_head * queue, u8 * mac)
-{
-	struct oveth_queue * q;
-
-	list_for_each_entry_rcu (q, queue, list) {
-		if (memcmp (q->mac, mac, ETH_ALEN) == 0)
-			return q;
-	}
-
-	return NULL;
-}
-
-static void
-add_queue (struct list_head * queue, spinlock_t * lock, u8 * mac)
-{
-	struct oveth_queue * q;
-
-	q = kmalloc (sizeof (struct oveth_queue), GFP_ATOMIC);
-	if (!q) {
-		pr_debug ("%s : can not allocate memory", __func__);
-		return;
-	}
-	memset (q, 0, sizeof (struct oveth_queue));
-	memcpy (q->mac, mac, ETH_ALEN);
-	q->update = jiffies;
-
-	spin_lock_bh (lock);
-	if (!find_queue (queue, mac)) 
-		list_add_rcu (&q->list, queue);
-	else
-		kfree (q);
-	spin_unlock_bh (lock);
-
-	return;
-}
-
-static void
-delete_queue (struct list_head  * queue, spinlock_t * lock, u8 * mac)
-{
-	struct oveth_queue * q;
-
-	spin_lock_bh (lock);
-	q = find_queue (queue, mac);
-	if (q) {
-		list_del_rcu (&q->list);
-		kfree_rcu (q, rcu);
-	}
-	spin_unlock_bh (lock);
-
-	return;
-}
-
-
 static void
 oveth_notify_unknown_mac (struct oveth_dev * oveth, u8 * mac)
 {
 	unsigned long timeout;
-	struct oveth_queue * q;
+	struct oveth_hash * h;
 
-	q = find_queue (&oveth->unknown_q, mac);
+	h = oveth_find_hash (&oveth->unknown_table, mac);
 
-	if (q == NULL) {
-		add_queue (&oveth->unknown_q, &oveth->unknown_q_lock,
-			   mac);
+	if (h == NULL) {
+		oveth_add_hash (&oveth->unknown_table, mac);
 		oveth_nl_event_send (oveth, mac, OVETH_EVENT_UNKNOWN_MAC);
 	} else {
-		timeout = q->update + OVETH_UNKNOWN_MAC_NOTIFY * HZ;
+		timeout = h->update + OVETH_UNKNOWN_MAC_NOTIFY * HZ;
 		if (time_before_eq (timeout, jiffies)) {
 			oveth_nl_event_send (oveth, mac,
 					     OVETH_EVENT_UNKNOWN_MAC);
-			q->update = jiffies;
+			h->update = jiffies;
 		}
 	}
 
@@ -405,19 +396,19 @@ static void
 oveth_notify_under_mac (struct oveth_dev * oveth, u8 * mac)
 {
 	unsigned long timeout;
-	struct oveth_queue * q;
+	struct oveth_hash * h;
 
-	q = find_queue (&oveth->under_q, mac);
+	h = oveth_find_hash (&oveth->under_table, mac);
 
-	if (q == NULL) {
-		add_queue (&oveth->under_q, &oveth->under_q_lock, mac);
+	if (h == NULL) {
+		oveth_add_hash (&oveth->under_table, mac);
 		oveth_nl_event_send (oveth, mac, OVETH_EVENT_UNDER_MAC);
 	} else {
-		timeout = q->update + OVETH_UNDER_MAC_NOTIFY * HZ;
+		timeout = h->update + OVETH_UNDER_MAC_NOTIFY * HZ;
 		if (time_before_eq (timeout, jiffies)) {
 			oveth_nl_event_send (oveth, mac,
 					     OVETH_EVENT_UNDER_MAC);
-			q->update = jiffies;
+			h->update = jiffies;
 		}
 	}
 
@@ -425,39 +416,24 @@ oveth_notify_under_mac (struct oveth_dev * oveth, u8 * mac)
 }
 
 static void
-aging_queue (struct list_head * queue) 
+aging_table (struct oveth_hashtable * oht)  
 {
-	struct oveth_queue * q;
-	struct list_head * p, * tmp;
+	int bkt;
+	struct oveth_hash * h;
+	struct hlist_node * node, * tmp;
 	unsigned long timeout;
 
-	list_for_each_safe (p, tmp, queue) {
-		q = list_entry_rcu (p, struct oveth_queue, list);
-		timeout = q->update + MAC_AGE_LIFETIME;
+	hash_for_each_safe (oht->mac_hash, bkt, node, tmp, h, hlist) {
+		timeout = h->update + MAC_AGE_LIFETIME;
 		if (time_before_eq (timeout, jiffies)) {
-			list_del_rcu (&q->list);
-			kfree_rcu (q, rcu);
+			hlist_del_rcu (&h->hlist);
+			kfree_rcu (h, rcu);
 		}
 	}
 
 	return;
 }
 
-
-static void
-destroy_queue (struct list_head * queue)
-{
-	struct oveth_queue * q;
-	struct list_head * p, * tmp;
-
-	list_for_each_safe (p, tmp, queue) {
-		q = list_entry_rcu (p, struct oveth_queue, list);
-		list_del_rcu (&q->list);
-		kfree_rcu (q, rcu);
-	}
-
-	return;
-}
 
 static void
 oveth_queue_cleanup (unsigned long arg)
@@ -469,14 +445,10 @@ oveth_queue_cleanup (unsigned long arg)
 		return;
 
 	/* aging unknown mac queue */
-	spin_lock_bh (&oveth->unknown_q_lock);
-	aging_queue (&oveth->unknown_q);
-	spin_unlock_bh (&oveth->unknown_q_lock);
+	aging_table (&oveth->unknown_table);
 
 	/* aging under mac queue */
-	spin_lock_bh (&oveth->under_q_lock);
-	aging_queue (&oveth->under_q);
-	spin_unlock_bh (&oveth->under_q_lock);
+	aging_table (&oveth->under_table);
 	
 	mod_timer (&oveth->age_timer, next_timer);
 
@@ -673,14 +645,9 @@ oveth_stop (struct net_device * dev)
 
 	del_timer_sync (&oveth->age_timer);
 
-	/* flush queue */
-	spin_lock_bh (&oveth->unknown_q_lock);
-	destroy_queue (&oveth->unknown_q);
-	spin_unlock_bh (&oveth->unknown_q_lock);
-
-	spin_lock_bh (&oveth->under_q_lock);
-	destroy_queue (&oveth->under_q);
-	spin_unlock_bh (&oveth->under_q_lock);
+	/* destroy hashtables */
+	oveth_destroy_hashtable (&oveth->unknown_table);
+	oveth_destroy_hashtable (&oveth->under_table);
 
 	return 0;
 }
@@ -768,9 +735,8 @@ oveth_ndo_fdb_add (struct ndmsg * ndm, struct nlattr * tb[],
 	else 
 		return -EEXIST;
 
-	if (find_queue (&oveth->unknown_q, (u8 *) addr))
-		delete_queue (&oveth->unknown_q, 
-			      &oveth->unknown_q_lock, (u8 *) addr);
+	if (oveth_find_hash (&oveth->unknown_table, (u8 *) addr))
+		oveth_delete_hash (&oveth->unknown_table, (u8 *) addr);
 
 	return 0;
 }
@@ -955,6 +921,9 @@ oveth_setup (struct net_device * dev)
 	spin_lock_init (&oveth->unknown_q_lock);
 	spin_lock_init (&oveth->under_q_lock);
 
+	oveth_init_hashtable (&oveth->under_table);
+	oveth_init_hashtable (&oveth->unknown_table);
+
 	init_timer_deferrable (&oveth->age_timer);
 	oveth->age_timer.function = oveth_queue_cleanup;
 	oveth->age_timer.data = (unsigned long) oveth;
@@ -1004,11 +973,6 @@ oveth_newlink (struct net * net, struct net_device * dev,
 	INIT_LIST_HEAD (&oveth->fdb_chain);
 	for (n = 0; n < FDB_HASH_SIZE; n++) 
 		INIT_LIST_HEAD (&(oveth->fdb_head[n]));
-
-	INIT_LIST_HEAD (&oveth->under_q);
-	INIT_LIST_HEAD (&oveth->unknown_q);
-
-	hash_init (oveth->mac_hash);
 
 	rc = register_netdevice (dev);
 	if (rc == 0) {
@@ -1133,8 +1097,8 @@ oveth_nl_cmd_fdb_add (struct sk_buff * skb, struct genl_info * info)
 	else 
 		return -EEXIST;
 
-	if (find_queue (&oveth->unknown_q, mac))
-		delete_queue (&oveth->unknown_q, &oveth->unknown_q_lock, mac);
+	if (oveth_find_hash (&oveth->unknown_table, mac))
+		oveth_delete_hash (&oveth->unknown_table, mac);
 
 	return 0;
 }
