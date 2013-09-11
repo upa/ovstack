@@ -25,7 +25,7 @@
 #include "ovstack.h"
 #include "ovstack_netlink.h"
 
-#define OVSTACK_VERSION "0.0.2"
+#define OVSTACK_VERSION "0.0.3"
 MODULE_VERSION (OVSTACK_VERSION);
 MODULE_LICENSE ("GPL");
 MODULE_AUTHOR ("upa@haeena.net");
@@ -45,6 +45,7 @@ MODULE_AUTHOR ("upa@haeena.net");
 
 static unsigned int ovstack_net_id;
 static u32 ovstack_salt __read_mostly;
+static unsigned long ovstack_event_seqnum __read_mostly;
 
 
 /* Overlay Node */
@@ -1205,15 +1206,48 @@ static struct pernet_operations ovstack_net_ops = {
  ****	Generic Netwolink Operations
  *****************************/
 
+static struct genl_multicast_group ovstack_mc_group = {
+	.name = "ovstack_mc_group",
+};
 
 static struct genl_family ovstack_nl_family = {
 	.id		= GENL_ID_GENERATE,
-	.name		= OVSTACK_GENL_NAME,
-	.version	= OVSTACK_GENL_VERSION,
-	.hdrsize	= 0,
+	.name		= "ovstack",
+	.version	= 0x01,
 	.maxattr	= OVSTACK_ATTR_MAX,
 };
 
+
+static struct genl_multicast_group test_mc_group = {
+	.name = "test_mc_group",
+};
+
+static struct genl_family test_family = {
+	.id		= GENL_ID_GENERATE,
+	.name		= "test_genl",
+	.version	= 0x01,
+	.maxattr	= OVSTACK_ATTR_MAX,
+};
+
+
+static struct nla_policy ovstack_nl_policy[OVSTACK_ATTR_MAX + 1] = {
+	[OVSTACK_ATTR_NONE]		= { .type = NLA_UNSPEC, },
+	[OVSTACK_ATTR_NODE_ID]		= { .type = NLA_U32, },
+	[OVSTACK_ATTR_DST_NODE_ID]	= { .type = NLA_U32, },
+	[OVSTACK_ATTR_NXT_NODE_ID]	= { .type = NLA_U32, },
+	[OVSTACK_ATTR_APP_ID]		= { .type = NLA_U8 },
+	[OVSTACK_ATTR_LOCATOR_IP4ADDR]	= { .type = NLA_U32, },
+	[OVSTACK_ATTR_LOCATOR_IP6ADDR]	= { .type = NLA_BINARY,
+					    .len = sizeof (struct in6_addr) },
+	[OVSTACK_ATTR_LOCATOR_WEIGHT]	= { .type = NLA_U8, },
+//	[OVSTACK_ATTR_EVENT]		= { .type = NLA_BINARY,
+//					    .len = sizeof 
+//					    (struct ovstack_genl_event)},
+};
+
+static int ovstack_notify_node_id_set (__u8 app, __be32 node_id, gfp_t flags);
+static int ovstack_notify_locator (int cmd, __u8 app, struct ov_locator * loc,
+				   gfp_t flags);
 
 static int
 ovstack_nl_cmd_node_id_set (struct sk_buff * skb, struct genl_info * info)
@@ -1240,6 +1274,8 @@ ovstack_nl_cmd_node_id_set (struct sk_buff * skb, struct genl_info * info)
 	node_id = nla_get_be32 (info->attrs[OVSTACK_ATTR_NODE_ID]);
 
 	OVSTACK_APP_OWNNODE (OVSTACK_NET_APP(ovnet, app))->node_id = node_id;
+
+	ovstack_notify_node_id_set (app, node_id, GFP_KERNEL);
 
 	return 0;
 }
@@ -1311,6 +1347,9 @@ ovstack_nl_cmd_locator_add (struct sk_buff * skb, struct genl_info * info)
 		sizeof (struct in6_addr));
 	ov_locator_add (ownnode, loc);
 
+	ovstack_notify_locator (OVSTACK_EVENT_LOCATOR_ADD, 
+				app, loc, GFP_KERNEL);
+
 	return 0;
 }
 
@@ -1366,6 +1405,9 @@ ovstack_nl_cmd_locator_delete (struct sk_buff * skb, struct genl_info * info)
 	}
 	ov_locator_delete (ownnode, loc);
 	kfree_rcu (loc, rcu);
+
+	ovstack_notify_locator (OVSTACK_EVENT_LOCATOR_DELETE, 
+				app, loc, GFP_KERNEL);
 
 	return 0;
 }
@@ -1433,6 +1475,9 @@ ovstack_nl_cmd_locator_weight_set (struct sk_buff * skb,
 		return -ENOENT;
 	}
 	ov_locator_weight_set (loc, weight);
+
+	ovstack_notify_locator (OVSTACK_EVENT_LOCATOR_UPDATE, 
+				app, loc, GFP_KERNEL);
 
 	return 0;
 }
@@ -2029,17 +2074,100 @@ out:
 }
 
 
-static struct nla_policy ovstack_nl_policy[OVSTACK_ATTR_MAX + 1] = {
-	[OVSTACK_ATTR_NONE]		= { .type = NLA_UNSPEC, },
-	[OVSTACK_ATTR_NODE_ID]		= { .type = NLA_U32, },
-	[OVSTACK_ATTR_DST_NODE_ID]	= { .type = NLA_U32, },
-	[OVSTACK_ATTR_NXT_NODE_ID]	= { .type = NLA_U32, },
-	[OVSTACK_ATTR_APP_ID]		= { .type = NLA_U8 },
-	[OVSTACK_ATTR_LOCATOR_IP4ADDR]	= { .type = NLA_U32, },
-	[OVSTACK_ATTR_LOCATOR_IP6ADDR]	= { .type = NLA_BINARY,
-					    .len = sizeof (struct in6_addr) },
-	[OVSTACK_ATTR_LOCATOR_WEIGHT]	= { .type = NLA_U8, },
-};
+/* notify via netlink multicast */
+static int
+ovstack_nl_event_send (struct ovstack_genl_event * event, gfp_t flags)
+{
+	int rc, size;
+	void * hdr;
+	struct sk_buff * skb;
+	struct nlattr * attr;
+	struct ovstack_genl_event * e;
+
+	size = nla_total_size (sizeof (struct ovstack_genl_event)) +
+		nla_total_size (0);
+
+	skb = genlmsg_new (size, flags);
+
+	if (!skb) 
+		return -ENOMEM;
+
+	hdr = genlmsg_put (skb, 0, ovstack_event_seqnum++,
+			   &ovstack_nl_family, 0, OVSTACK_CMD_EVENT);
+
+	if (IS_ERR (hdr)) {
+		nlmsg_free (skb);
+		return -ENOMEM;
+	}
+
+	attr = nla_reserve (skb, OVSTACK_ATTR_EVENT,
+			    sizeof (struct ovstack_genl_event));
+
+	if (!attr) {
+		nlmsg_free (skb);
+		return -EINVAL;
+	}
+
+	e = (struct ovstack_genl_event *) nla_data (attr);
+
+	if (!e) {
+		nlmsg_free (skb);
+		return -EINVAL;
+	}
+
+	memcpy (e, event, sizeof (struct ovstack_genl_event));
+	
+	rc = genlmsg_end (skb, hdr);
+	if (rc < 0) {
+		nlmsg_free (skb);
+		return rc;
+	}
+
+	NETLINK_CB (skb).portid = 0;
+	NETLINK_CB (skb).dst_group = 1;
+
+	rc = genlmsg_multicast (skb, 0, ovstack_mc_group.id, flags);
+
+	pr_debug ("%s: send notify. type \"%d\"", __func__, event->type);
+
+	return 0;
+}
+
+static int
+ovstack_notify_node_id_set (__u8 app, __be32 node_id, gfp_t flags)
+{
+	struct ovstack_genl_event event;
+
+	memset (&event, 0, sizeof (event));
+	event.app = app;
+	event.type = OVSTACK_EVENT_NODE_ID_SET;
+	event.node_id = node_id;
+
+	return ovstack_nl_event_send (&event, flags);
+}
+
+static int
+ovstack_notify_locator (int cmd, __u8 app, struct ov_locator * loc, 
+			gfp_t flags)
+{
+	struct ovstack_genl_event event;
+
+	memset (&event, 0, sizeof (event));
+	event.app = app;
+	event.type = cmd;
+	event.weight = loc->weight;
+	event.family = loc->remote_ip_family;
+	event.node_id = loc->node->node_id;
+	if (loc->remote_ip_family == AF_INET)
+		memcpy (event.remote_ip4, &loc->remote_ip4,
+			sizeof (struct in_addr));
+	if (loc->remote_ip_family == AF_INET6)
+		memcpy (event.remote_ip6, &loc->remote_ip6, 
+			sizeof (struct in6_addr));
+
+	return ovstack_nl_event_send (&event, flags);
+}
+
 
 static struct genl_ops ovstack_nl_ops[] = {
 	{
@@ -2258,18 +2386,28 @@ __init ovstack_init_module (void)
 	if (rc != 0)
 		return rc;
 
-	rc = genl_register_family_with_ops (&ovstack_nl_family,
-					    ovstack_nl_ops,
-					    ARRAY_SIZE (ovstack_nl_ops));
-	if (rc != 0) {
-		unregister_pernet_subsys (&ovstack_net_ops);
-		return rc;
-	}
+	genl_register_family (&test_family);
+	genl_register_mc_group (&test_family, &test_mc_group);
+	printk (KERN_INFO "register test family success");
+
+	genl_register_family (&ovstack_nl_family);
+	genl_register_mc_group (&ovstack_nl_family, &ovstack_mc_group);
+//	genl_register_ops (&ovstack_nl_family, ovstack_nl_ops);
+
 
 	printk (KERN_INFO "overlay stack (version %s) is loaded\n", 
 		OVSTACK_VERSION);
 
 	return 0;
+
+
+genl_mc_failed:
+	genl_unregister_family (&ovstack_nl_family);
+genl_failed:
+	unregister_pernet_subsys (&ovstack_net_ops);
+
+	return rc;
+
 }
 module_init (ovstack_init_module);
 

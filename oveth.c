@@ -1254,8 +1254,6 @@ static struct genl_ops oveth_nl_ops[] = {
 };
 
 
-void nlrecv (struct sk_buff * skb) {return;}
-
 static int
 oveth_nl_event_send (struct oveth_dev * oveth, u8 * mac, u8 type)
 {
