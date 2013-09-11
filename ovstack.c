@@ -2401,6 +2401,7 @@ static void
 __exit ovstack_exit_module (void)
 {
 
+	genl_unregister_family (&ovstack_nl_event_family);
 	genl_unregister_family (&ovstack_nl_family);
 	unregister_pernet_subsys (&ovstack_net_ops);
 
