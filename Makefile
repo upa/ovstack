@@ -3,7 +3,7 @@ BUILD_DIR := $(shell pwd)
 VERBOSE = 0
 c_flags = -DDEBUG
 
-CC = gcc -Wall
+CC = gcc -Wall -O0
 
 obj-m := ovstack.o oveth.o
 

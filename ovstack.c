@@ -1206,27 +1206,24 @@ static struct pernet_operations ovstack_net_ops = {
  ****	Generic Netwolink Operations
  *****************************/
 
-static struct genl_multicast_group ovstack_mc_group = {
-	.name = "ovstack_mc_group",
-};
 
 static struct genl_family ovstack_nl_family = {
 	.id		= GENL_ID_GENERATE,
-	.name		= "ovstack",
-	.version	= 0x01,
+	.name		= OVSTACK_GENL_NAME,
+	.version	= OVSTACK_GENL_VERSION,
 	.maxattr	= OVSTACK_ATTR_MAX,
 };
 
-
-static struct genl_multicast_group test_mc_group = {
-	.name = "test_mc_group",
-};
-
-static struct genl_family test_family = {
+/* onyl event noty genl family */
+static struct genl_family ovstack_nl_event_family = {
 	.id		= GENL_ID_GENERATE,
-	.name		= "test_genl",
-	.version	= 0x01,
-	.maxattr	= OVSTACK_ATTR_MAX,
+	.name		= "ovstack_event",
+	.version	= OVSTACK_GENL_EVENT_VERSION,
+	.maxattr	= 0,
+};
+
+static struct genl_multicast_group ovstack_event_mc_group = {
+	.name = "ovstack_event",
 };
 
 
@@ -1240,9 +1237,9 @@ static struct nla_policy ovstack_nl_policy[OVSTACK_ATTR_MAX + 1] = {
 	[OVSTACK_ATTR_LOCATOR_IP6ADDR]	= { .type = NLA_BINARY,
 					    .len = sizeof (struct in6_addr) },
 	[OVSTACK_ATTR_LOCATOR_WEIGHT]	= { .type = NLA_U8, },
-//	[OVSTACK_ATTR_EVENT]		= { .type = NLA_BINARY,
-//					    .len = sizeof 
-//					    (struct ovstack_genl_event)},
+	[OVSTACK_ATTR_EVENT]		= { .type = NLA_BINARY,
+					    .len = sizeof 
+					    (struct ovstack_genl_event)},
 };
 
 static int ovstack_notify_node_id_set (__u8 app, __be32 node_id, gfp_t flags);
@@ -2093,7 +2090,7 @@ ovstack_nl_event_send (struct ovstack_genl_event * event, gfp_t flags)
 		return -ENOMEM;
 
 	hdr = genlmsg_put (skb, 0, ovstack_event_seqnum++,
-			   &ovstack_nl_family, 0, OVSTACK_CMD_EVENT);
+			   &ovstack_nl_event_family, 0, OVSTACK_CMD_EVENT);
 
 	if (IS_ERR (hdr)) {
 		nlmsg_free (skb);
@@ -2126,7 +2123,7 @@ ovstack_nl_event_send (struct ovstack_genl_event * event, gfp_t flags)
 	NETLINK_CB (skb).portid = 0;
 	NETLINK_CB (skb).dst_group = 1;
 
-	rc = genlmsg_multicast (skb, 0, ovstack_mc_group.id, flags);
+	rc = genlmsg_multicast (skb, 0, ovstack_event_mc_group.id, flags);
 
 	pr_debug ("%s: send notify. type \"%d\"", __func__, event->type);
 
@@ -2386,28 +2383,17 @@ __init ovstack_init_module (void)
 	if (rc != 0)
 		return rc;
 
-	genl_register_family (&test_family);
-	genl_register_mc_group (&test_family, &test_mc_group);
-	printk (KERN_INFO "register test family success");
-
-	genl_register_family (&ovstack_nl_family);
-	genl_register_mc_group (&ovstack_nl_family, &ovstack_mc_group);
-//	genl_register_ops (&ovstack_nl_family, ovstack_nl_ops);
-
+	genl_register_family_with_ops (&ovstack_nl_family, ovstack_nl_ops,
+				       ARRAY_SIZE (ovstack_nl_ops));
+	
+	genl_register_family (&ovstack_nl_event_family);
+	genl_register_mc_group (&ovstack_nl_event_family,
+				&ovstack_event_mc_group);
 
 	printk (KERN_INFO "overlay stack (version %s) is loaded\n", 
 		OVSTACK_VERSION);
 
 	return 0;
-
-
-genl_mc_failed:
-	genl_unregister_family (&ovstack_nl_family);
-genl_failed:
-	unregister_pernet_subsys (&ovstack_net_ops);
-
-	return rc;
-
 }
 module_init (ovstack_init_module);
 

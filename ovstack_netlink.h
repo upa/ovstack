@@ -11,7 +11,7 @@
 
 #define OVSTACK_GENL_NAME	"ovstack"
 #define OVSTACK_GENL_VERSION	0x01
-#define OVSTACK_GENL_MC_GROUP	"ovstack_mc_group"
+#define OVSTACK_GENL_MC_GROUP	"ovstack"
 
 /*
  * NODE_ID_SET		- app_id, node_id : set my node id 
@@ -76,6 +76,10 @@ enum {
   change node id, add locator, delete locator
  */
 
+
+#define OVSTACK_GENL_EVENT_NAME		"ovstack"
+#define OVSTACK_GENL_EVENT_VERSION	0x01
+#define OVSTACK_GENL_EVENT_MC_GROUP	"ovstack_mc_group"
 
 
 enum {

@@ -60,7 +60,7 @@ enum {
  */
 #define OVETH_GENL_NAME		"oveth"
 #define OVETH_GENL_VERSION	0x01
-#define OVETH_GENL_MC_GROUP	"oveth_mc_group"
+#define OVETH_GENL_MC_GROUP	"oveth"
 
 
 
