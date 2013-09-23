@@ -77,7 +77,7 @@ enum {
  */
 
 
-#define OVSTACK_GENL_EVENT_NAME		"ovstack"
+#define OVSTACK_GENL_EVENT_NAME		"ovstack_event"
 #define OVSTACK_GENL_EVENT_VERSION	0x01
 #define OVSTACK_GENL_EVENT_MC_GROUP	"ovstack_mc_group"
 

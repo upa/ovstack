@@ -58,21 +58,21 @@ MODULE_ALIAS_RTNL_LINK ("oveth");
 /* OVHDR + Ethernet */
 #define OVETH_HEADROOM (16 + 14)
 
-/* Notify interval */
-#define OVETH_UNKNOWN_MAC_NOTIFY	20
-#define OVETH_UNDER_MAC_NOTIFY		20
-
 /* Aging interval */
 #define MAC_AGE_INTERVAL		(10 * HZ)
 #define MAC_AGE_LIFETIME		(60 * HZ)
 
-static unsigned long oveth_event_seqnum __read_mostly;
+
 static u32 oveth_salt __read_mostly;
 static u8  bcast_ethaddr[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
 struct oveth_fdb_node {
 	struct list_head	list;
 	struct rcu_head		rcu;
+
+	u16			state;
+	unsigned long		updated;
+
 	__be32			node_id;
 	struct oveth_fdb	* fdb;		/* parent */
 };
@@ -112,23 +112,6 @@ struct oveth_stats {
 	struct u64_stats_sync	syncp;
 };
 
-/* mac address hash table. 
- * for queueing notify userland application via netlink 
- * of unknwon dest/accommodated mac.
- */
-struct oveth_hashtable {
-	DECLARE_HASHTABLE (mac_hash, 6);       	/* hash for accommodated mac */
-};
-
-struct oveth_hash {
-	struct hlist_node	hlist;
-	struct rcu_head		rcu;
-
-	u8			mac[ETH_ALEN];
-	unsigned long		update;	/* jiffies */
-};
-
-
 /* psuedo network device */
 struct oveth_dev {
 	struct list_head	list;
@@ -139,12 +122,6 @@ struct oveth_dev {
 	__u32			vni;
 	struct list_head	fdb_head[FDB_HASH_SIZE];
 	struct list_head	fdb_chain;
-
-	spinlock_t		under_q_lock;
-	spinlock_t		unknown_q_lock;
-
-	struct oveth_hashtable	under_table;
-	struct oveth_hashtable 	unknown_table;
 
 	unsigned long		age_interval;
 	struct timer_list	age_timer;
@@ -211,7 +188,7 @@ find_oveth_fdb_by_mac (struct oveth_dev * oveth, const u8 * mac)
 }
 
 static struct oveth_fdb *
-create_oveth_fdb (u8 * mac)
+create_oveth_fdb (const u8 * mac)
 {
 	struct oveth_fdb * f;
 
@@ -264,18 +241,22 @@ oveth_fdb_find_node (struct oveth_fdb * f, __be32 node_id)
 	return NULL;
 }
 
-static void
+static struct oveth_fdb_node *
 oveth_fdb_add_node (struct oveth_fdb * f, __be32 node_id)
 {
 	struct oveth_fdb_node * fn;
 
 	fn = kmalloc (sizeof (struct oveth_fdb_node), GFP_KERNEL);
 	memset (fn, 0, sizeof (struct oveth_fdb_node));
+
 	fn->node_id = node_id;
+	fn->updated = jiffies;
 	fn->fdb = f;
+
 	list_add_rcu (&(fn->list), &(f->node_id_list));
 	f->node_id_count++;
-	return;
+
+	return fn;
 }
 
 static void
@@ -288,127 +269,36 @@ oveth_fdb_del_node (struct oveth_fdb * f, __be32 node_id)
 	fn->fdb = NULL;
 	list_del_rcu (&(fn->list));
 	f->node_id_count--;
-	return;
-}
-
-
-/* oveth mac hash operations */
-
-static inline void 
-oveth_init_hashtable (struct oveth_hashtable * oht) 
-{
-	hash_init (oht->mac_hash);
-	return;
-}
-
-static inline void
-oveth_destroy_hashtable (struct oveth_hashtable * oht) 
-{
-	int bkt;
-	struct oveth_hash * h;
-	struct hlist_node * node, * tmp;
-
-	hash_for_each_safe (oht->mac_hash, bkt, node, tmp, h, hlist) {
-		hlist_del_rcu (&h->hlist);
-		kfree_rcu (h, rcu);
-	}
 
 	return;
 }
 
-
-static inline struct oveth_hash *
-oveth_find_hash (struct oveth_hashtable * oht, u8 * mac)
-{
-	struct oveth_hash * oh;
-	struct hlist_node * node;
-
-	hash_for_each_possible_rcu (oht->mac_hash, oh, node, hlist, 
-				    (unsigned long) mac) {
-		if (memcmp (oh->mac, mac, ETH_ALEN) == 0) 
-			return oh;
-	}
-
-	return NULL;
-}
-
-static inline struct oveth_hash * 
-oveth_add_hash (struct oveth_hashtable * oht, u8 * mac) 
-{
-	struct oveth_hash * oh;
-
-	oh = (struct oveth_hash *) kmalloc (sizeof (struct oveth_hash), 
-					    GFP_ATOMIC);
-	if (!oh) 
-		return NULL;
-		
-	memcpy (oh->mac, mac, sizeof (ETH_ALEN));
-	oh->update = jiffies;
-
-	hash_add_rcu (oht->mac_hash, &oh->hlist, (unsigned long) mac);
-
-	return oh;
-}
-
-static inline void
-oveth_delete_hash (struct oveth_hashtable * oht, u8 * mac)
-{
-	struct oveth_hash * oh;
-
-	oh = oveth_find_hash (oht, mac);
-	if (!oh) 
-		return;
-
-	hash_del_rcu (&oh->hlist);
-
-	return;
-}
-
-/* oveth unknown dest notify queue operations */
-
-static int oveth_nl_event_send (struct oveth_dev * oveth, u8 * mac, u8 type);
-
-static void
-oveth_notify_unknown_mac (struct oveth_dev * oveth, u8 * mac)
-{
-	unsigned long timeout;
-	struct oveth_hash * h;
-
-	h = oveth_find_hash (&oveth->unknown_table, mac);
-
-	if (h == NULL) {
-		oveth_add_hash (&oveth->unknown_table, mac);
-		oveth_nl_event_send (oveth, mac, OVETH_EVENT_UNKNOWN_MAC);
-	} else {
-		timeout = h->update + OVETH_UNKNOWN_MAC_NOTIFY * HZ;
-		if (time_before_eq (timeout, jiffies)) {
-			oveth_nl_event_send (oveth, mac,
-					     OVETH_EVENT_UNKNOWN_MAC);
-			h->update = jiffies;
-		}
-	}
-
-	return;
-}
 
 
 static void
-oveth_notify_under_mac (struct oveth_dev * oveth, u8 * mac)
+aging_fdb (struct oveth_dev * oveth)
 {
+	struct list_head * p, * tmp, * p2, * tmp2;
+	struct oveth_fdb * f;
+	struct oveth_fdb_node * fn;
 	unsigned long timeout;
-	struct oveth_hash * h;
 
-	h = oveth_find_hash (&oveth->under_table, mac);
+	list_for_each_safe (p, tmp, &oveth->fdb_chain) {
+		f = list_entry (p, struct oveth_fdb, chain);
 
-	if (h == NULL) {
-		oveth_add_hash (&oveth->under_table, mac);
-		oveth_nl_event_send (oveth, mac, OVETH_EVENT_UNDER_MAC);
-	} else {
-		timeout = h->update + OVETH_UNDER_MAC_NOTIFY * HZ;
-		if (time_before_eq (timeout, jiffies)) {
-			oveth_nl_event_send (oveth, mac,
-					     OVETH_EVENT_UNDER_MAC);
-			h->update = jiffies;
+		list_for_each_safe (p2, tmp2, &f->node_id_list) {
+			fn = list_entry (p2, struct oveth_fdb_node, list);
+			if (fn->state & NUD_PERMANENT) 
+				goto next;
+
+			timeout = fn->updated + MAC_AGE_LIFETIME;
+
+			if (time_before_eq (timeout, jiffies)) {
+				list_del_rcu (&fn->list);
+				kfree_rcu (fn, rcu);
+			}
+
+		next:;
 		}
 	}
 
@@ -416,27 +306,7 @@ oveth_notify_under_mac (struct oveth_dev * oveth, u8 * mac)
 }
 
 static void
-aging_table (struct oveth_hashtable * oht)  
-{
-	int bkt;
-	struct oveth_hash * h;
-	struct hlist_node * node, * tmp;
-	unsigned long timeout;
-
-	hash_for_each_safe (oht->mac_hash, bkt, node, tmp, h, hlist) {
-		timeout = h->update + MAC_AGE_LIFETIME;
-		if (time_before_eq (timeout, jiffies)) {
-			hlist_del_rcu (&h->hlist);
-			kfree_rcu (h, rcu);
-		}
-	}
-
-	return;
-}
-
-
-static void
-oveth_queue_cleanup (unsigned long arg)
+oveth_cleanup (unsigned long arg)
 {
 	struct oveth_dev * oveth = (struct oveth_dev *) arg;
 	unsigned long next_timer = jiffies + MAC_AGE_INTERVAL;
@@ -444,12 +314,9 @@ oveth_queue_cleanup (unsigned long arg)
 	if (!netif_running (oveth->dev))
 		return;
 
-	/* aging unknown mac queue */
-	aging_table (&oveth->unknown_table);
+	/* aging fdb table */
+	aging_fdb (oveth);
 
-	/* aging under mac queue */
-	aging_table (&oveth->under_table);
-	
 	mod_timer (&oveth->age_timer, next_timer);
 
 	return;
@@ -474,25 +341,15 @@ oveth_xmit (struct sk_buff * skb, struct net_device * dev)
 	skb_reset_mac_header (skb);
 	eth = eth_hdr (skb);
 
-	/* snoop source mac address */
-	oveth_notify_under_mac (oveth, (u8 *) eth->h_source);
-
 	f = find_oveth_fdb_by_mac (oveth, eth->h_dest);
 
 	if (!f) {
-		oveth_notify_unknown_mac (oveth, (u8 *) eth->h_dest);
 		f = find_oveth_fdb_by_mac (oveth, bcast_ethaddr);
 		if (!f) {
-			/*
-			pr_debug ("%s: dst fdb entry does not exist. "
-				  "%02x:%02x:%02x:%02x:%02x:%02x", __func__,
-				  eth->h_dest[0],eth->h_dest[1],eth->h_dest[2],
-				  eth->h_dest[3],eth->h_dest[4],eth->h_dest[5]);
-			*/
+			pr_debug ("%s : broadcast dest is not set", __func__);
 			return NETDEV_TX_OK;
 		}
 	}
-
 
 	hash = eth_hash (eth->h_dest);
 
@@ -547,12 +404,38 @@ oveth_xmit (struct sk_buff * skb, struct net_device * dev)
 	return NETDEV_TX_OK;
 }
 
+static void
+oveth_snoop (struct oveth_dev * oveth, __be32 ov_src, const u8 * src_mac)
+{
+	/* snoop and learning source mac and source node id */
+
+	struct oveth_fdb * f;
+	struct oveth_fdb_node * fn;
+
+	f = find_oveth_fdb_by_mac (oveth, src_mac);
+
+	if (likely (f)) {
+		fn = oveth_fdb_find_node (f, ov_src);
+		if (likely (fn))
+			fn->updated = jiffies;
+		else 
+			fn = oveth_fdb_add_node (f, ov_src);
+	} else {
+		f = create_oveth_fdb (src_mac);
+		oveth_fdb_add_node (f, ov_src);
+		oveth_fdb_add (oveth, f);
+	}
+
+	return;
+}
+
 static int
 oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 {
 	__u32 vni;
 	struct ovhdr * ovh;
 	struct iphdr * oip;
+	struct ethhdr * eth;
 	struct net * net;
 	struct oveth_dev * oveth;
 	struct oveth_stats * stats;
@@ -589,7 +472,11 @@ oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 		goto drop;
 
 	__skb_tunnel_rx (skb, oveth->dev);
+	skb_reset_mac_header (skb);
 	skb_reset_network_header (skb);
+
+	eth = eth_hdr (skb);
+	oveth_snoop (oveth, ovh->ov_src, eth->h_source);
 
 	if (skb->ip_summed != CHECKSUM_UNNECESSARY ||
 	    !(oveth->dev->features & NETIF_F_RXCSUM))
@@ -644,10 +531,6 @@ oveth_stop (struct net_device * dev)
 	struct oveth_dev * oveth = netdev_priv (dev);
 
 	del_timer_sync (&oveth->age_timer);
-
-	/* destroy hashtables */
-	oveth_destroy_hashtable (&oveth->unknown_table);
-	oveth_destroy_hashtable (&oveth->under_table);
 
 	return 0;
 }
@@ -730,13 +613,12 @@ oveth_ndo_fdb_add (struct ndmsg * ndm, struct nlattr * tb[],
 	}
 
 	fn = oveth_fdb_find_node (f, node_id);
-	if (fn == NULL) 
-		oveth_fdb_add_node (f, node_id);
-	else 
+	if (fn == NULL) {
+		fn = oveth_fdb_add_node (f, node_id);
+		fn->state |= NUD_PERMANENT;
+	} else {
 		return -EEXIST;
-
-	if (oveth_find_hash (&oveth->unknown_table, (u8 *) addr))
-		oveth_delete_hash (&oveth->unknown_table, (u8 *) addr);
+	}
 
 	return 0;
 }
@@ -770,7 +652,7 @@ oveth_fdb_info (struct sk_buff * skb, struct oveth_dev * oveth,
 		const struct oveth_fdb_node * fn, 
 		u32 portid, u32 seq, int type, unsigned int flags)
 {
-	//unsigned long now = jiffies;
+	unsigned long now = jiffies;
 	struct nda_cacheinfo ci;
 	struct nlmsghdr * nlh;
 	struct ndmsg * ndm;
@@ -792,8 +674,7 @@ oveth_fdb_info (struct sk_buff * skb, struct oveth_dev * oveth,
 	} else
 		ndm->ndm_family = AF_BRIDGE;
 
-	/* fake state ... */
-	ndm->ndm_state = (NUD_PERMANENT | NUD_REACHABLE);
+	ndm->ndm_state = fn->state;
 	ndm->ndm_ifindex = oveth->dev->ifindex;
 	ndm->ndm_flags = NTF_SELF;
 	ndm->ndm_type = NDA_DST;
@@ -805,10 +686,8 @@ oveth_fdb_info (struct sk_buff * skb, struct oveth_dev * oveth,
 	if (send_ip && nla_put_be32 (skb, NDA_DST, fn->node_id))
 		goto nla_put_failure;
 
-	/*
-	ci.ndm_used		= jiffies_to_clock_t (now - fn->used);
+	//ci.ndm_used		= jiffies_to_clock_t (now - fn->used);
 	ci.ndm_updated		= jiffies_to_clock_t (now - fn->updated);
-	*/
 	ci.ndm_confirmed	= 0;
 	ci.ndm_refcnt		= 0;
 
@@ -918,14 +797,8 @@ oveth_setup (struct net_device * dev)
 	dev->hw_features |= NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_RXCSUM;
 	dev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
 
-	spin_lock_init (&oveth->unknown_q_lock);
-	spin_lock_init (&oveth->under_q_lock);
-
-	oveth_init_hashtable (&oveth->under_table);
-	oveth_init_hashtable (&oveth->unknown_table);
-
 	init_timer_deferrable (&oveth->age_timer);
-	oveth->age_timer.function = oveth_queue_cleanup;
+	oveth->age_timer.function = oveth_cleanup;
 	oveth->age_timer.data = (unsigned long) oveth;
 
 	oveth->dev = dev;
@@ -1035,10 +908,6 @@ static struct rtnl_link_ops oveth_link_ops __read_mostly = {
  *	generic netlink operations
  *************************************/
 
-static struct genl_multicast_group oveth_mc_group = {
-	.name = OVETH_GENL_MC_GROUP,
-};
-
 static struct genl_family oveth_nl_family = {
 	.id		= GENL_ID_GENERATE,
 	.name		= OVETH_GENL_NAME,
@@ -1053,8 +922,6 @@ static struct nla_policy oveth_nl_policy[OVETH_ATTR_MAX + 1] = {
 	[OVETH_ATTR_VNI]	= { .type = NLA_U32, },
 	[OVETH_ATTR_MACADDR]	= { .type = NLA_BINARY,
 				    .len = sizeof (struct in6_addr) },
-	[OVETH_ATTR_EVENT]	= { .type = NLA_BINARY,
-				    .len = sizeof (struct oveth_genl_event) },
 };
 
 
@@ -1096,9 +963,6 @@ oveth_nl_cmd_fdb_add (struct sk_buff * skb, struct genl_info * info)
 		oveth_fdb_add_node (f, node_id);
 	else 
 		return -EEXIST;
-
-	if (oveth_find_hash (&oveth->unknown_table, mac))
-		oveth_delete_hash (&oveth->unknown_table, mac);
 
 	return 0;
 }
@@ -1254,75 +1118,6 @@ static struct genl_ops oveth_nl_ops[] = {
 };
 
 
-static int
-oveth_nl_event_send (struct oveth_dev * oveth, u8 * mac, u8 type)
-{
-	int rc, size; 
-	void * hdr;
-	struct sk_buff * skb;
-	struct nlattr * attr;
-	struct oveth_genl_event * event;
-
-	/* notify under mac or unknown destination mac address via netlink */
-	
-	size = nla_total_size (sizeof (struct oveth_genl_event)) +
-		nla_total_size (0);
-
-	skb = genlmsg_new (size, GFP_ATOMIC);
-
-	if (!skb)
-		return -ENOMEM;
-
-	hdr = genlmsg_put (skb, 0, oveth_event_seqnum++, 
-			   &oveth_nl_family, 0, OVETH_CMD_EVENT);
-
-	if (IS_ERR (hdr)) {
-		nlmsg_free (skb);
-		return -ENOMEM;
-	}
-
-	attr = nla_reserve (skb, OVETH_ATTR_EVENT,
-			    sizeof (struct oveth_genl_event));
-
-	if (!attr) {
-		nlmsg_free (skb);
-		return -EINVAL;
-	}
-
-	event = (struct oveth_genl_event *) nla_data (attr);
-	if (!event) {
-		nlmsg_free (skb);
-		return -EINVAL;
-	}
-
-	memset (event, 0, sizeof (struct oveth_genl_event));
-	event->type = type;
-	event->app = OVAPP_ETHERNET;
-	event->vni = oveth->vni;
-	memcpy (event->mac, mac, ETH_ALEN);
-
-	rc = genlmsg_end (skb, hdr);
-	if (rc < 0) {
-		nlmsg_free (skb);
-		return rc;
-	}
-
-	NETLINK_CB(skb).portid = 0;
-	NETLINK_CB(skb).dst_group = 1;
-
-	rc = genlmsg_multicast (skb, 0, oveth_mc_group.id, GFP_ATOMIC);
-
-	pr_debug ("%s : send %d, rc %d, grp %d "
-		  "mac %02x:%02x:%02x:%02x:%02x:%02x",
-		  __func__, type, rc, NETLINK_CB (skb).dst_group,
-		  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-	
-	return 0;
-}
-
-
-
 /*************************************
  *	network name space operations
  *************************************/
@@ -1385,7 +1180,6 @@ __init oveth_init_module (void)
 {
 	int rc;
 
-	oveth_event_seqnum = 0;
 	get_random_bytes (&oveth_salt, sizeof (oveth_salt));
 
 	rc = register_pernet_device (&oveth_net_ops);
@@ -1403,19 +1197,11 @@ __init oveth_init_module (void)
 	if (rc != 0) 
 		goto genl_failed;
 
-
-	rc = genl_register_mc_group (&oveth_nl_family, &oveth_mc_group);
-	if (rc != 0)
-		goto genl_mc_failed;
-
 	printk (KERN_INFO "overlay ethernet deriver (version %s) is loaded\n",
 		OVETH_VERSION);
 
 	return 0;
 
-
-genl_mc_failed : 
-	genl_unregister_family (&oveth_nl_family);
 genl_failed :	 
 	rtnl_link_unregister (&oveth_link_ops);
 link_failed :	 

@@ -1217,7 +1217,7 @@ static struct genl_family ovstack_nl_family = {
 /* onyl event noty genl family */
 static struct genl_family ovstack_nl_event_family = {
 	.id		= GENL_ID_GENERATE,
-	.name		= "ovstack_event",
+	.name		= OVSTACK_GENL_EVENT_NAME,
 	.version	= OVSTACK_GENL_EVENT_VERSION,
 	.maxattr	= 0,
 };
