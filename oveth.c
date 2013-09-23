@@ -188,11 +188,15 @@ find_oveth_fdb_by_mac (struct oveth_dev * oveth, const u8 * mac)
 }
 
 static struct oveth_fdb *
-create_oveth_fdb (const u8 * mac)
+create_oveth_fdb (const u8 * mac, gfp_t flags)
 {
 	struct oveth_fdb * f;
 
-	f = kmalloc (sizeof (struct oveth_fdb), GFP_KERNEL);
+	f = kmalloc (sizeof (struct oveth_fdb), flags);
+
+	if (!f)
+		return NULL;
+
 	memset (f, 0, sizeof (struct oveth_fdb));
 	
 	INIT_LIST_HEAD (&(f->list));
@@ -242,11 +246,11 @@ oveth_fdb_find_node (struct oveth_fdb * f, __be32 node_id)
 }
 
 static struct oveth_fdb_node *
-oveth_fdb_add_node (struct oveth_fdb * f, __be32 node_id)
+oveth_fdb_add_node (struct oveth_fdb * f, __be32 node_id, gfp_t flags)
 {
 	struct oveth_fdb_node * fn;
 
-	fn = kmalloc (sizeof (struct oveth_fdb_node), GFP_KERNEL);
+	fn = kmalloc (sizeof (struct oveth_fdb_node), flags);
 	memset (fn, 0, sizeof (struct oveth_fdb_node));
 
 	fn->node_id = node_id;
@@ -274,14 +278,18 @@ oveth_fdb_del_node (struct oveth_fdb * f, __be32 node_id)
 }
 
 
-
 static void
-aging_fdb (struct oveth_dev * oveth)
+oveth_cleanup (unsigned long arg)
 {
+	struct oveth_dev * oveth = (struct oveth_dev *) arg;
 	struct list_head * p, * tmp, * p2, * tmp2;
 	struct oveth_fdb * f;
 	struct oveth_fdb_node * fn;
 	unsigned long timeout;
+	unsigned long next_timer = jiffies + MAC_AGE_INTERVAL;
+
+	if (!netif_running (oveth->dev))
+		return;
 
 	list_for_each_safe (p, tmp, &oveth->fdb_chain) {
 		f = list_entry (p, struct oveth_fdb, chain);
@@ -301,21 +309,6 @@ aging_fdb (struct oveth_dev * oveth)
 		next:;
 		}
 	}
-
-	return;
-}
-
-static void
-oveth_cleanup (unsigned long arg)
-{
-	struct oveth_dev * oveth = (struct oveth_dev *) arg;
-	unsigned long next_timer = jiffies + MAC_AGE_INTERVAL;
-
-	if (!netif_running (oveth->dev))
-		return;
-
-	/* aging fdb table */
-	aging_fdb (oveth);
 
 	mod_timer (&oveth->age_timer, next_timer);
 
@@ -419,10 +412,16 @@ oveth_snoop (struct oveth_dev * oveth, __be32 ov_src, const u8 * src_mac)
 		if (likely (fn))
 			fn->updated = jiffies;
 		else 
-			fn = oveth_fdb_add_node (f, ov_src);
+			fn = oveth_fdb_add_node (f, ov_src, GFP_ATOMIC);
 	} else {
-		f = create_oveth_fdb (src_mac);
-		oveth_fdb_add_node (f, ov_src);
+		if (!(f = create_oveth_fdb (src_mac, GFP_ATOMIC)))
+			return;
+
+		if (!(fn = oveth_fdb_add_node (f, ov_src, GFP_ATOMIC)))
+			return;
+
+		fn->state = NUD_REACHABLE;
+
 		oveth_fdb_add (oveth, f);
 	}
 
@@ -472,7 +471,6 @@ oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 		goto drop;
 
 	__skb_tunnel_rx (skb, oveth->dev);
-	skb_reset_mac_header (skb);
 	skb_reset_network_header (skb);
 
 	eth = eth_hdr (skb);
@@ -608,13 +606,13 @@ oveth_ndo_fdb_add (struct ndmsg * ndm, struct nlattr * tb[],
 
 	f = find_oveth_fdb_by_mac (oveth, addr);
 	if (f == NULL) {
-		f = create_oveth_fdb ((u8 *)addr);
+		f = create_oveth_fdb ((u8 *)addr, GFP_KERNEL);
 		oveth_fdb_add (oveth, f);
 	}
 
 	fn = oveth_fdb_find_node (f, node_id);
 	if (fn == NULL) {
-		fn = oveth_fdb_add_node (f, node_id);
+		fn = oveth_fdb_add_node (f, node_id, GFP_KERNEL);
 		fn->state |= NUD_PERMANENT;
 	} else {
 		return -EEXIST;
@@ -954,15 +952,17 @@ oveth_nl_cmd_fdb_add (struct sk_buff * skb, struct genl_info * info)
 
 	f = find_oveth_fdb_by_mac (oveth, mac);
 	if (f == NULL) {
-		f = create_oveth_fdb (mac);
+		f = create_oveth_fdb (mac, GFP_KERNEL);
 		oveth_fdb_add (oveth, f);
 	}
 	
 	fn = oveth_fdb_find_node (f, node_id);
-	if (fn == NULL) 
-		oveth_fdb_add_node (f, node_id);
-	else 
+	if (fn == NULL) {
+		fn = oveth_fdb_add_node (f, node_id, GFP_KERNEL);
+		fn->state |= NUD_PERMANENT;
+	} else {
 		return -EEXIST;
+	}
 
 	return 0;
 }
