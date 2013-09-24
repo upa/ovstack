@@ -1629,11 +1629,12 @@ ovstack_nl_cmd_node_delete (struct sk_buff * skb, struct genl_info * info)
 		return -ENOENT;
 	}
 
+	ovstack_notify_locator (OVSTACK_EVENT_NODE_DELETE, 
+				app, loc, GFP_KERNEL);
+
 	ov_locator_delete (node, loc);
 	kfree_rcu (loc, rcu);
 
-	ovstack_notify_locator (OVSTACK_EVENT_NODE_DELETE, 
-				app, loc, GFP_KERNEL);
 out:
 	return 0;
 }
