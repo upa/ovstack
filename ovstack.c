@@ -1559,6 +1559,8 @@ ovstack_nl_cmd_node_add (struct sk_buff * skb, struct genl_info * info)
 		return -EEXIST;
 	}
 
+	ovstack_notify_locator (OVSTACK_EVENT_NODE_ADD, app, loc, GFP_KERNEL);
+
 	return 0;
 }
 
@@ -1630,6 +1632,8 @@ ovstack_nl_cmd_node_delete (struct sk_buff * skb, struct genl_info * info)
 	ov_locator_delete (node, loc);
 	kfree_rcu (loc, rcu);
 
+	ovstack_notify_locator (OVSTACK_EVENT_NODE_DELETE, 
+				app, loc, GFP_KERNEL);
 out:
 	return 0;
 }
