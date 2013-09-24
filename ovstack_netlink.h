@@ -79,7 +79,7 @@ enum {
 
 #define OVSTACK_GENL_EVENT_NAME		"ovstack_event"
 #define OVSTACK_GENL_EVENT_VERSION	0x01
-#define OVSTACK_GENL_EVENT_MC_GROUP	"ovstack_mc_group"
+#define OVSTACK_GENL_EVENT_MC_GROUP	"ovstack_event"
 
 
 enum {
@@ -110,16 +110,17 @@ struct ovstack_genl_event {
 
 #else
 /* for userland applications */
-#include <sys/types.h>
+#include <asm/types.h>
 #include <netinet/in.h>
 
 struct ovstack_genl_event {
-	u_int8_t	app;
-	u_int8_t	type;
+	__u8	app;
+	__u8	type;
 
-	u_int8_t	weight;
-	u_int8_t	family;
-	struct in_addr	node_id;
+	__u8	weight;
+	__u8	family;
+
+	__u32	node_id;
 	
 	union {
 		struct in_addr	remote_ip4;

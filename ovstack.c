@@ -1223,7 +1223,7 @@ static struct genl_family ovstack_nl_event_family = {
 };
 
 static struct genl_multicast_group ovstack_event_mc_group = {
-	.name = "ovstack_event",
+	.name = OVSTACK_GENL_EVENT_MC_GROUP,
 };
 
 
@@ -2129,7 +2129,8 @@ ovstack_nl_event_send (struct ovstack_genl_event * event, gfp_t flags)
 
 	rc = genlmsg_multicast (skb, 0, ovstack_event_mc_group.id, flags);
 
-	pr_debug ("%s: send notify. type \"%d\"", __func__, event->type);
+	pr_debug ("%s: send notify. type \"%d\", rc = %d\n",
+		  __func__, event->type, rc);
 
 	return 0;
 }
