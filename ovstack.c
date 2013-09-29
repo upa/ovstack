@@ -594,12 +594,12 @@ ov_nexthop_rpf_check (struct sk_buff * skb, struct net * net,
 
 	if (unlikely (!ovapp)) {
 		pr_debug ("%s: application %d does not exist", __func__, app);
-		return 0;
+		return -1;
 	}
 
 	node = find_ov_node_by_id (ovapp, node_id);
 	if (!node)
-		return 0;
+		return -1;
 
 	if (skb->protocol == htons (ETH_P_IP)) {
 		iph = (struct iphdr *) skb_network_header (skb);
@@ -774,8 +774,10 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	/* this packet is not for me. routing ! */
 	if (ovh->ov_dst != ownnode->node_id) {
 		ovh->ov_ttl--;
-		if (ovh->ov_ttl == 0) 
+		if (ovh->ov_ttl < 1) {
+			printk (KERN_INFO "ovstack : TTL exceed!\n");
 			return 0;
+		}
 
 		if (!skb->encapsulation)
 			skb->encapsulation = 1;
@@ -1001,7 +1003,7 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 	 */
 	if (skb->encapsulation && 
 	    ov_nexthop_rpf_check (skb, net, ovh->ov_app, nxt))
-		goto noroute_drop;
+		goto rpfcheck_drop;
 
 	if (!skb->encapsulation) {
 		skb_reset_inner_headers (skb);
@@ -1051,7 +1053,7 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 error_drop:
 	dev->stats.tx_errors++;
 	dev->stats.tx_aborted_errors++;
-
+rpfcheck_drop:
 noroute_drop:
 	return NETDEV_TX_OK;
 }
@@ -1059,7 +1061,7 @@ noroute_drop:
 inline netdev_tx_t 
 ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 {
-	int ret;
+	int ret, cloned = 0;
 	struct ovhdr * ovh;
 	struct net * net = dev_net (dev);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -1084,12 +1086,16 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 	}
 
 
+	if (ort->ort_nxt_count > 1)
+		cloned = 1;
+
 	list_for_each_entry_rcu (ortnxt, &(ort->ort_nxts), list) {
 
 		/* mcast packet  */
 		if (OVSTACK_APP_OWNNODE (ovapp)->node_id != ovh->ov_src &&
 		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt) {
 			/* to me and not from me -> recv */
+			cloned = 1;
 			mskb = skb_copy (skb, GFP_ATOMIC);
 			if (!mskb) {
 				printk (KERN_INFO "ovstack : no buffer space "
@@ -1103,7 +1109,7 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 		/* mcast echo */
 		if (OVSTACK_APP_OWNNODE (ovapp)->node_id == ovh->ov_src &&
 		    OVSTACK_APP_OWNNODE (ovapp)->node_id == ortnxt->ort_nxt) {
-			/* to me and from me -> drop */
+			/* to me and from me. this is mcast echo -> drop */
 			goto skip;
 		}
 
@@ -1121,11 +1127,17 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 
 		ret = ovstack_xmit_node (mskb, dev, ortnxt->ort_nxt);
 
-		if (ret != NETDEV_TX_OK) 
+		if (ret != NETDEV_TX_OK) {
+			if (cloned)
+				kfree_skb (skb);
 			return ret;
+		}
 
 	skip:;
 	}
+
+	if (cloned)
+		kfree_skb (skb);
 
 	return NETDEV_TX_OK;
 }
