@@ -644,7 +644,7 @@ static int
 route_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 {
 	int len;
-	char addrbuf4[16];
+	char addrbuf1[16], addrbuf2[16];
 	__u8 app_id;
 	__u32 dst_node_id, nxt_node_id;
 	struct genlmsghdr * ghdr;
@@ -667,7 +667,7 @@ route_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 		      (void *) ghdr + GENL_HDRLEN, len);
 
 	if (!attrs[OVSTACK_ATTR_APP_ID]) {
-		fprintf (stderr, "%s: emptu app id\n", __func__);
+		fprintf (stderr, "%s: empty app id\n", __func__);
 		return -1;
 	}
 	if (!attrs[OVSTACK_ATTR_DST_NODE_ID]) {
@@ -683,14 +683,11 @@ route_nlmsg (const struct sockaddr_nl * who, struct nlmsghdr * n, void * arg)
 	dst_node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_DST_NODE_ID]);
 	nxt_node_id = rta_getattr_u32 (attrs[OVSTACK_ATTR_NXT_NODE_ID]);
 
-	printf ("%3d  ", app_id);
-	inet_ntop (AF_INET, &dst_node_id, addrbuf4, sizeof (addrbuf4));
-	printf ("%s", addrbuf4);
-	print_offset (addrbuf4, NODE_ID_OFFSET);
-	inet_ntop (AF_INET, &nxt_node_id, addrbuf4, sizeof (addrbuf4));
-	printf ("%s", addrbuf4);
-	print_offset (addrbuf4, NODE_ID_OFFSET);
-	printf ("\n");
+	inet_ntop (AF_INET, &dst_node_id, addrbuf1, sizeof (addrbuf1));
+	inet_ntop (AF_INET, &nxt_node_id, addrbuf2, sizeof (addrbuf2));
+
+	printf ("app %d to %s via %s\n", app_id, addrbuf1, addrbuf2);
+
 	
 	return 0;
 }
@@ -832,12 +829,6 @@ do_route_show (int argc, char ** argv)
 	if (rtnl_send (&genl_rth, &req, req.n.nlmsg_len) < 0)
 		return -2;
 
-	printf ("App  ");
-	printf ("Destination");
-	print_offset ("Destination", NODE_ID_OFFSET);
-	printf ("Next hop");
-	print_offset ("Next hop", NODE_ID_OFFSET);
-	printf ("\n");
 	if (rtnl_dump_filter (&genl_rth, route_nlmsg, NULL) < 0) {
 		fprintf (stderr, "Dump terminated\n");
 		return -1;
