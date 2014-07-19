@@ -25,7 +25,7 @@
 #include "ovstack.h"
 #include "ovstack_netlink.h"
 
-#define OVSTACK_VERSION "0.0.3"
+#define OVSTACK_VERSION "0.0.4"
 MODULE_VERSION (OVSTACK_VERSION);
 MODULE_LICENSE ("GPL");
 MODULE_AUTHOR ("upa@haeena.net");
@@ -1226,16 +1226,10 @@ static struct genl_family ovstack_nl_family = {
 	.maxattr	= OVSTACK_ATTR_MAX,
 };
 
-/* onyl event noty genl family */
-static struct genl_family ovstack_nl_event_family = {
-	.id		= GENL_ID_GENERATE,
-	.name		= OVSTACK_GENL_EVENT_NAME,
-	.version	= OVSTACK_GENL_EVENT_VERSION,
-	.maxattr	= 0,
-};
-
-static struct genl_multicast_group ovstack_event_mc_group = {
-	.name = OVSTACK_GENL_EVENT_MC_GROUP,
+static struct genl_multicast_group ovstack_mc_groups[] = {
+	{
+		.name = OVSTACK_GENL_MC_GROUP,
+	},
 };
 
 
@@ -2107,7 +2101,7 @@ ovstack_nl_event_send (struct ovstack_genl_event * event, gfp_t flags)
 		return -ENOMEM;
 
 	hdr = genlmsg_put (skb, 0, ovstack_event_seqnum++,
-			   &ovstack_nl_event_family, 0, OVSTACK_CMD_EVENT);
+			   &ovstack_nl_family, 0, OVSTACK_CMD_EVENT);
 
 	if (IS_ERR (hdr)) {
 		nlmsg_free (skb);
@@ -2140,7 +2134,7 @@ ovstack_nl_event_send (struct ovstack_genl_event * event, gfp_t flags)
 	NETLINK_CB (skb).portid = 0;
 	NETLINK_CB (skb).dst_group = 1;
 
-	rc = genlmsg_multicast (skb, 0, ovstack_event_mc_group.id, flags);
+	rc = genlmsg_multicast (&ovstack_nl_family, skb, 0, 0, flags);
 
 	pr_debug ("%s: send notify. type \"%d\", rc = %d\n",
 		  __func__, event->type, rc);
@@ -2401,12 +2395,14 @@ __init ovstack_init_module (void)
 	if (rc != 0)
 		return rc;
 
-	genl_register_family_with_ops (&ovstack_nl_family, ovstack_nl_ops,
-				       ARRAY_SIZE (ovstack_nl_ops));
+	rc = genl_register_family_with_ops_groups (&ovstack_nl_family,
+						   ovstack_nl_ops,
+						   ovstack_mc_groups);
 	
-	genl_register_family (&ovstack_nl_event_family);
-	genl_register_mc_group (&ovstack_nl_event_family,
-				&ovstack_event_mc_group);
+	if (rc != 0) {
+		unregister_pernet_subsys (&ovstack_net_ops);
+		return rc;
+	}
 
 	printk (KERN_INFO "overlay stack (version %s) is loaded\n", 
 		OVSTACK_VERSION);
@@ -2415,11 +2411,11 @@ __init ovstack_init_module (void)
 }
 module_init (ovstack_init_module);
 
+
 static void
 __exit ovstack_exit_module (void)
 {
 
-	genl_unregister_family (&ovstack_nl_event_family);
 	genl_unregister_family (&ovstack_nl_family);
 	unregister_pernet_subsys (&ovstack_net_ops);
 
