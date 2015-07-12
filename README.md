@@ -10,8 +10,7 @@ generic netlink APIs.
 
 The detail of ovstack is decribed at a paper 
 "ovstack : A Protocol Stack of Common Data Plane for Overlay Networks"
-at SDNMO workshop in IEEE/IFIP NOMS conference at May 2014
-(will be appeared). 
+at SDNMO workshop in IEEE/IFIP NOMS conference at May 2014.
 
 
 Install and how to use
