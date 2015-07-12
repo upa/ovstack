@@ -701,7 +701,7 @@ do_show_app (int argc, char ** argv)
 	int ret;
 
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
-		      OVSTACK_CMD_APP_ID_GET, NLM_F_REQUEST | NLM_F_ROOT);
+		      OVSTACK_CMD_APP_ID_GET, NLM_F_REQUEST | NLM_F_DUMP);
 
 	if ((ret = rtnl_send (&genl_rth, &req.n, req.n.nlmsg_len)) < 0) {
 		printf ("%d\n", ret);
@@ -724,7 +724,7 @@ do_show_id (int argc, char ** argv)
 	int ret;
 
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
-		      OVSTACK_CMD_NODE_ID_GET, NLM_F_REQUEST | NLM_F_ROOT);
+		      OVSTACK_CMD_NODE_ID_GET, NLM_F_REQUEST | NLM_F_DUMP);
 
 	if ((ret = rtnl_send (&genl_rth, &req.n, req.n.nlmsg_len)) < 0) {
 		printf ("%d\n", ret);
@@ -745,8 +745,7 @@ static int
 do_show_locator (int argc, char ** argv)
 {
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
-		      OVSTACK_CMD_LOCATOR_GET, 
-		      NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST);
+		      OVSTACK_CMD_LOCATOR_GET, NLM_F_REQUEST | NLM_F_DUMP);
 
 	req.n.nlmsg_seq = genl_rth.dump = ++genl_rth.seq;
 
@@ -772,8 +771,7 @@ static int
 do_show_node (int argc, char ** argv)
 {
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
-		      OVSTACK_CMD_NODE_GET, 
-		      NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST);
+		      OVSTACK_CMD_NODE_GET, NLM_F_REQUEST | NLM_F_DUMP);
 
 	req.n.nlmsg_seq = genl_rth.dump = ++genl_rth.seq;
 
@@ -824,8 +822,7 @@ static int
 do_route_show (int argc, char ** argv)
 {
 	GENL_REQUEST (req, 1024, genl_family, 0, OVSTACK_GENL_VERSION,
-		      OVSTACK_CMD_ROUTE_GET,
-		      NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST);
+		      OVSTACK_CMD_ROUTE_GET, NLM_F_REQUEST | NLM_F_DUMP);
 
 	req.n.nlmsg_seq = genl_rth.dump = ++genl_rth.seq;
 

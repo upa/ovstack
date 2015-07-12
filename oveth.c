@@ -470,7 +470,7 @@ oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 				oveth->dev->dev_addr) == 0) 
 		goto drop;
 
-	__skb_tunnel_rx (skb, oveth->dev);
+	__skb_tunnel_rx (skb, oveth->dev, net);
 	skb_reset_network_header (skb);
 
 	eth = eth_hdr (skb);
@@ -623,11 +623,14 @@ oveth_ndo_fdb_add (struct ndmsg * ndm, struct nlattr * tb[],
 
 /* Delete entry via netlink */
 static int
-oveth_ndo_fdb_delete (struct ndmsg * ndm, struct net_device * dev,
+oveth_ndo_fdb_delete (struct ndmsg * ndm, struct nlattr * tb[],
+		      struct net_device * dev,
 		      const unsigned char * addr)
 {
 	struct oveth_fdb * f;
 	struct oveth_dev * oveth = netdev_priv (dev);
+
+	/* XXX: should check nlattr tb[]. include/uapi/linux/neighbour.h */
 
 	if (!(ndm->ndm_state & (NUD_PERMANENT | NUD_REACHABLE))) {
 		pr_info ("RTM_NEWNEIGH with invalid state %#x\n",
@@ -1192,8 +1195,7 @@ __init oveth_init_module (void)
 		goto link_failed;
 
 
-	rc = genl_register_family_with_ops (&oveth_nl_family, oveth_nl_ops,
-					    ARRAY_SIZE (oveth_nl_ops));
+	rc = genl_register_family_with_ops (&oveth_nl_family, oveth_nl_ops);
 	if (rc != 0) 
 		goto genl_failed;
 

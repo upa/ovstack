@@ -1218,24 +1218,26 @@ static struct pernet_operations ovstack_net_ops = {
  ****	Generic Netwolink Operations
  *****************************/
 
+/* genl family of ovstack event notify */
+static struct genl_multicast_group ovstack_event_mcgrps[] = {
+	{ .name = OVSTACK_GENL_EVENT_MC_GROUP, },
+};
+
+static struct genl_family ovstack_nl_event_family = {
+	.id		= GENL_ID_GENERATE,
+	.name		= OVSTACK_GENL_EVENT_NAME,
+	.version	= OVSTACK_GENL_EVENT_VERSION,
+	.maxattr	= 0,
+	.mcgrps		= ovstack_event_mcgrps,
+	.n_mcgrps	= ARRAY_SIZE (ovstack_event_mcgrps),
+};
+
 
 static struct genl_family ovstack_nl_family = {
 	.id		= GENL_ID_GENERATE,
 	.name		= OVSTACK_GENL_NAME,
 	.version	= OVSTACK_GENL_VERSION,
 	.maxattr	= OVSTACK_ATTR_MAX,
-};
-
-/* onyl event noty genl family */
-static struct genl_family ovstack_nl_event_family = {
-	.id		= GENL_ID_GENERATE,
-	.name		= OVSTACK_GENL_EVENT_NAME,
-	.version	= OVSTACK_GENL_EVENT_VERSION,
-	.maxattr	= 0,
-};
-
-static struct genl_multicast_group ovstack_event_mc_group = {
-	.name = OVSTACK_GENL_EVENT_MC_GROUP,
 };
 
 
@@ -1786,7 +1788,7 @@ out:
 
 static int
 ovstack_nl_cmd_node_id_dump (struct sk_buff * skb,
-			    struct netlink_callback * cb)
+			     struct netlink_callback * cb)
 {
 	u8 app;
 	struct net * net = sock_net (skb->sk);
@@ -2107,7 +2109,7 @@ ovstack_nl_event_send (struct ovstack_genl_event * event, gfp_t flags)
 		return -ENOMEM;
 
 	hdr = genlmsg_put (skb, 0, ovstack_event_seqnum++,
-			   &ovstack_nl_event_family, 0, OVSTACK_CMD_EVENT);
+			   &ovstack_nl_family, 0, OVSTACK_CMD_EVENT);
 
 	if (IS_ERR (hdr)) {
 		nlmsg_free (skb);
@@ -2140,7 +2142,7 @@ ovstack_nl_event_send (struct ovstack_genl_event * event, gfp_t flags)
 	NETLINK_CB (skb).portid = 0;
 	NETLINK_CB (skb).dst_group = 1;
 
-	rc = genlmsg_multicast (skb, 0, ovstack_event_mc_group.id, flags);
+	rc = genlmsg_multicast (&ovstack_nl_event_family, skb, 0, 0, flags);
 
 	pr_debug ("%s: send notify. type \"%d\", rc = %d\n",
 		  __func__, event->type, rc);
@@ -2184,48 +2186,55 @@ ovstack_notify_locator (int cmd, __u8 app, struct ov_locator * loc,
 }
 
 
+/* XXX */
+#ifdef DEBUG
+#define GENL_ADMIN_PERM_OVSTACK	0
+#else
+#define GENL_ADMIN_PERM_OVSTACK	GENL_ADMIN_PERM
+#endif
+
 static struct genl_ops ovstack_nl_ops[] = {
 	{
 		.cmd = OVSTACK_CMD_NODE_ID_SET,
 		.doit = ovstack_nl_cmd_node_id_set,
 		.policy = ovstack_nl_policy,
-		.flags = GENL_ADMIN_PERM,
+		.flags = GENL_ADMIN_PERM_OVSTACK,
 	},
 	{
 		.cmd = OVSTACK_CMD_LOCATOR_ADD,
 		.doit = ovstack_nl_cmd_locator_add,
 		.policy = ovstack_nl_policy,
-		.flags = GENL_ADMIN_PERM,
+		.flags = GENL_ADMIN_PERM_OVSTACK,
 	},
 	{
 		.cmd = OVSTACK_CMD_LOCATOR_DELETE,
 		.doit = ovstack_nl_cmd_locator_delete,
 		.policy = ovstack_nl_policy,
-		.flags = GENL_ADMIN_PERM,
+		.flags = GENL_ADMIN_PERM_OVSTACK,
 	},
 	{
 		.cmd = OVSTACK_CMD_LOCATOR_WEIGHT_SET,
 		.doit = ovstack_nl_cmd_locator_weight_set,
 		.policy = ovstack_nl_policy,
-		.flags = GENL_ADMIN_PERM,
+		.flags = GENL_ADMIN_PERM_OVSTACK,
 	},
 	{
 		.cmd = OVSTACK_CMD_NODE_ADD,
 		.doit = ovstack_nl_cmd_node_add,
 		.policy = ovstack_nl_policy,
-		.flags = GENL_ADMIN_PERM,
+		.flags = GENL_ADMIN_PERM_OVSTACK,
 	},
 	{
 		.cmd = OVSTACK_CMD_NODE_DELETE,
 		.doit = ovstack_nl_cmd_node_delete,
 		.policy = ovstack_nl_policy,
-		.flags = GENL_ADMIN_PERM,
+		.flags = GENL_ADMIN_PERM_OVSTACK,
 	},
 	{
 		.cmd = OVSTACK_CMD_NODE_WEIGHT_SET,
 		.doit = ovstack_nl_cmd_node_weight_set,
 		.policy = ovstack_nl_policy,
-		.flags = GENL_ADMIN_PERM,
+		.flags = GENL_ADMIN_PERM_OVSTACK,
 	},
 	{
 		.cmd = OVSTACK_CMD_APP_ID_GET,
@@ -2251,13 +2260,13 @@ static struct genl_ops ovstack_nl_ops[] = {
 		.cmd = OVSTACK_CMD_ROUTE_ADD,
 		.doit = ovstack_nl_cmd_route_add,
 		.policy = ovstack_nl_policy,
-		.flags = GENL_ADMIN_PERM,
+		.flags = GENL_ADMIN_PERM_OVSTACK,
 	},
 	{
 		.cmd = OVSTACK_CMD_ROUTE_DELETE,
 		.doit = ovstack_nl_cmd_route_delete,
 		.policy = ovstack_nl_policy,
-		.flags = GENL_ADMIN_PERM,
+		.flags = GENL_ADMIN_PERM_OVSTACK,
 	},
 	{
 		.cmd = OVSTACK_CMD_ROUTE_GET,
@@ -2401,17 +2410,28 @@ __init ovstack_init_module (void)
 	if (rc != 0)
 		return rc;
 
-	genl_register_family_with_ops (&ovstack_nl_family, ovstack_nl_ops,
-				       ARRAY_SIZE (ovstack_nl_ops));
-	
-	genl_register_family (&ovstack_nl_event_family);
-	genl_register_mc_group (&ovstack_nl_event_family,
-				&ovstack_event_mc_group);
+	rc = genl_register_family (&ovstack_nl_event_family);
+	if (rc != 0)
+		goto reg_event_failed;
+
+	rc = genl_register_family_with_ops (&ovstack_nl_family,
+					    ovstack_nl_ops);
+	if (rc != 0)
+		goto reg_family_failed;
 
 	printk (KERN_INFO "overlay stack (version %s) is loaded\n", 
 		OVSTACK_VERSION);
 
 	return 0;
+
+
+reg_family_failed:
+	genl_unregister_family (&ovstack_nl_event_family);
+
+reg_event_failed:
+	unregister_pernet_subsys (&ovstack_net_ops);
+
+	return rc;
 }
 module_init (ovstack_init_module);
 
