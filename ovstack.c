@@ -12,6 +12,7 @@
 #include <linux/rculist.h>
 #include <linux/hash.h>
 #include <linux/udp.h>
+#include <net/protocol.h>
 #include <net/udp.h>
 #include <net/sock.h>
 #include <net/route.h>
@@ -39,9 +40,9 @@ MODULE_AUTHOR ("upa@haeena.net");
 
 #define OVSTACK_DEFAULT_WEIGHT 50
 
-/* IP + UDP. OVHDR is already pushed by upper driver */
-#define OVSTACK_IPV4_HEADROOM (20 + 8)
-#define OVSTACK_IPV6_HEADROOM (40 + 8)
+/* IP. OVHDR is already pushed by upper driver */
+#define OVSTACK_IPV4_HEADROOM (20)
+#define OVSTACK_IPV6_HEADROOM (40)
 
 static unsigned int ovstack_net_id;
 static u32 ovstack_salt __read_mostly;
@@ -138,7 +139,7 @@ struct ovstack_app {
 	struct list_head node_chain;			/* node chain */
 
 	/* callback function for when a app's packet is received */
-	int (* app_recv_ops) (struct sock * sk, struct sk_buff * skb);
+	int (* app_recv_ops) (struct sk_buff * skb);
 };
 
 #define OVSTACK_APP_OWNNODE(app) (app->own_node)
@@ -174,7 +175,6 @@ struct ovstack_app {
 
 /* per network namespace structure */
 struct ovstack_net {
-	struct socket * sock;				/* udp encap socket */
 	struct ovstack_app * apps[OVSTACK_APP_MAX + 1];	/* ov applications */
 };
 #define OVSTACK_NET_APP(ovnet, ovapp) (ovnet->apps[ovapp])
@@ -382,24 +382,6 @@ ov_locator_weight_set (struct ov_locator * loc, u8 weight)
 /***************************
  *** xmit related locator operations
  ***************************/
-
-static void
-ovstack_sock_free (struct sk_buff * skb)
-{
-	sock_put (skb->sk);
-}
-
-static void
-ovstack_set_owner (struct net * net, struct sk_buff * skb)
-{
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct sock * sk = ovnet->sock->sk;
-
-	skb_orphan (skb);
-	sock_hold (sk);
-	skb->sk = sk;
-	skb->destructor = ovstack_sock_free;
-}
 
 static int
 ovstack_ipv4_loc_count (struct net * net, u8 app)
@@ -740,24 +722,20 @@ ortable_destroy (struct ortable * ort)
  *****************************/
 
 static int
-ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
+ovstack_recv (struct sk_buff * skb)
 {
 	/*
 	 * call function pointer according to ovstack protocl number
 	 */
 
 	struct ovhdr * ovh;
-	struct net * net = sock_net (sk);
+	struct net * net = dev_net (skb->dev);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ovstack_app * ovapp;
 	struct ov_node * ownnode;
 
-	/* pop off outer UDP header */
-	__skb_pull (skb, sizeof (struct udphdr));
-
 	/* need ov and inner ether header to present */
 	if (!pskb_may_pull (skb, sizeof (struct ovhdr))) {
-		skb_push (skb, sizeof (struct udphdr));
 		return 1;
 	}
 
@@ -779,9 +757,6 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 			return 0;
 		}
 
-		if (!skb->encapsulation)
-			skb->encapsulation = 1;
-
 		ovstack_xmit (skb, skb->dev);
 		return 0;
 	}
@@ -793,11 +768,11 @@ ovstack_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 		return 0;
 	}
 
-	return ovapp->app_recv_ops (sk, skb);
+	return ovapp->app_recv_ops (skb);
 }
 
 static int
-ovstack_udp_encap_mcast_recv (struct sock * sk, struct sk_buff * skb)
+ovstack_mcast_recv (struct sk_buff * skb)
 {
 	/*
 	 * Destination of packet is not for me. but send this packet to 
@@ -805,7 +780,7 @@ ovstack_udp_encap_mcast_recv (struct sock * sk, struct sk_buff * skb)
 	 */
 
 	struct ovhdr * ovh;
-	struct net * net = sock_net (sk);
+	struct net * net = dev_net (skb->dev);
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
 	struct ovstack_app * ovapp;
 
@@ -827,7 +802,7 @@ ovstack_udp_encap_mcast_recv (struct sock * sk, struct sk_buff * skb)
 		return 0;
 	}
 
-	return ovapp->app_recv_ops (sk, skb);
+	return ovapp->app_recv_ops (skb);
 	
 }
 
@@ -838,7 +813,6 @@ ovstack_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
 {
 	int rc;
 	struct iphdr * iph;
-	struct udphdr * uh;
 	struct flowi4 fl4;
 	struct rtable * rt;
 
@@ -854,41 +828,34 @@ ovstack_xmit_ipv4_loc (struct sk_buff * skb, struct net_device * dev,
 		return NETDEV_TX_OK;
 	}
 	
+/*
 	memset (&(IPCB (skb)->opt), 0, sizeof (IPCB (skb)->opt));
 	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED |
 			      IPSKB_REROUTED);
+*/
 	skb_dst_drop (skb);
 	skb_dst_set (skb, &rt->dst);
 	
-	/* setup udp header and ip header */
+	/* setup ip header */
 	if (skb_cow_head (skb, OVSTACK_IPV4_HEADROOM)) {
 		dev->stats.tx_dropped++;
 		return NETDEV_TX_OK;
 	}
 	
-	__skb_push (skb, sizeof (struct udphdr));
-	skb_reset_transport_header (skb);
-	uh 		= udp_hdr (skb);
-	uh->dest	= htons (OVSTACK_PORT);
-	uh->source	= htons (OVSTACK_PORT);
-	uh->len		= htons (skb->len);
-	uh->check	= 0;
-
 	__skb_push (skb, sizeof (struct iphdr));
 	skb_reset_network_header (skb);
 	iph		= ip_hdr (skb);
 	iph->version	= 4;
 	iph->ihl	= sizeof (struct iphdr) >> 2;
 	iph->frag_off	= 0;
-	iph->protocol	= IPPROTO_UDP;
+	iph->protocol	= IPPROTO_OVSTACK;
 	iph->tos	= 0;
 	iph->saddr	= *((__be32 *)(saddr));
 	iph->daddr	= *((__be32 *)(daddr));
 	iph->ttl	= 16;
 
-	ovstack_set_owner (dev_net (dev), skb);
 	skb->ip_summed = CHECKSUM_NONE;
-	skb->pkt_type = PACKET_HOST;
+	//skb->pkt_type = PACKET_HOST;
 
 	rc = ip_local_out (skb);
 
@@ -908,7 +875,6 @@ ovstack_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
 {
 	int rc;
 	struct ipv6hdr * ip6h;
-	struct udphdr * uh;
 	struct flowi6 fl6;
 	struct dst_entry * dst;
 	
@@ -932,26 +898,20 @@ ovstack_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
 		return NETDEV_TX_OK;
 	}
 
+/*
         memset (&(IPCB (skb)->opt), 0, sizeof (IPCB (skb)->opt));
 	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED |
 			      IPSKB_REROUTED);
+*/
 
 	skb_dst_drop (skb);
 	skb_dst_set (skb, dst);
 
-	/* setup udp hdaer and ipv6 header */
+	/* setup ipv6 header */
 	if (skb_cow_head (skb, OVSTACK_IPV6_HEADROOM)) {
 		dev->stats.tx_dropped++;
 		return NETDEV_TX_OK;
 	}
-
-	__skb_push (skb, sizeof (struct udphdr));
-	skb_reset_transport_header (skb);
-	uh 		= udp_hdr (skb);
-	uh->dest	= htons (OVSTACK_PORT);
-	uh->source	= htons (OVSTACK_PORT);
-	uh->len		= htons (skb->len);
-	uh->check	= 0;
 
 	__skb_push (skb, sizeof (struct ipv6hdr));
 	skb_reset_network_header (skb);
@@ -962,13 +922,12 @@ ovstack_xmit_ipv6_loc (struct sk_buff * skb, struct net_device * dev,
 	ip6h->flow_lbl[1]	= 0l;
 	ip6h->flow_lbl[2]	= 0l;
 	ip6h->payload_len	= htons (skb->len);
-	ip6h->nexthdr		= IPPROTO_UDP;
+	ip6h->nexthdr		= IPPROTO_OVSTACK;
 	ip6h->daddr		= *daddr;
 	ip6h->saddr		= *saddr;
 	ip6h->hop_limit		= 16;
 
-	ovstack_set_owner (dev_net (dev), skb);
-	skb->pkt_type = PACKET_HOST;
+	//skb->pkt_type = PACKET_HOST;
 
 	rc = ip6_local_out (skb);
 
@@ -997,18 +956,10 @@ ovstack_xmit_node (struct sk_buff * skb, struct net_device * dev, __be32 nxt)
 
 	ovh = (struct ovhdr *) skb->data;
 
-	/* Nexthop only rpf check.
-	 * if a node that send this packet same as next hop node,
-	 * Dont't forward the packet. (for aovid multicast loop)
-	 */
-	if (skb->encapsulation && 
-	    ov_nexthop_rpf_check (skb, net, ovh->ov_app, nxt))
+	/* XXX: rpf check
+	if (ov_nexthop_rpf_check (skb, net, ovh->ov_app, nxt))
 		goto rpfcheck_drop;
-
-	if (!skb->encapsulation) {
-		skb_reset_inner_headers (skb);
-		skb->encapsulation = 1;
-	}
+	*/
 
 	loc4count = ovstack_ipv4_loc_count (net, ovh->ov_app);
 	loc6count = ovstack_ipv6_loc_count (net, ovh->ov_app);
@@ -1102,7 +1053,7 @@ ovstack_xmit (struct sk_buff * skb, struct net_device * dev)
 					"available for mcast packet\n");
 				goto skip;
 			}
-			ovstack_udp_encap_mcast_recv (ovnet->sock->sk, mskb);
+			ovstack_mcast_recv (mskb);
 			goto skip;
 		}
 
@@ -1146,45 +1097,13 @@ EXPORT_SYMBOL (ovstack_xmit);
 static __net_init int
 ovstack_init_net (struct net * net)
 {
-	int n, rc;
+	int n;
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-	struct sock * sk;
-	struct sockaddr_in6 ovstack_addr = {
-		.sin6_family	= AF_INET6,
-		.sin6_port	= htons (OVSTACK_PORT),
-		.sin6_addr	= IN6ADDR_ANY_INIT,
-	};
 	
 	memset (ovnet, 0, sizeof (struct ovstack_net));
 
 	for (n = 0; n < OVSTACK_APP_MAX + 1; n++) 
 		ovnet->apps[n] = NULL;
-
-	/* udp encapsulation socket init */
-	rc = sock_create_kern (AF_INET6, SOCK_DGRAM, 
-			       IPPROTO_UDP, &(ovnet->sock));
-	if (rc < 0) {
-		pr_debug ("UDP socket create failed\n");
-		return rc;
-	}
-	
-	sk = ovnet->sock->sk;
-	sk_change_net (sk, net);
-
-	rc = kernel_bind (ovnet->sock, (struct sockaddr *)&(ovstack_addr),
-			  sizeof (ovstack_addr));
-	if (rc < 0) {
-		pr_debug ("bind for UDP socket %pI6:%u (%d) failed\n",
-			  &(ovstack_addr.sin6_addr),
-			  ntohs (ovstack_addr.sin6_port), rc);
-		sk_release_kernel (sk);
-		ovnet->sock = NULL;
-		return rc;
-	}
-
-	udp_sk (sk)->encap_type = 1;
-	udp_sk (sk)->encap_rcv = ovstack_udp_encap_recv;
-	udp_encap_enable ();
 
 	return 0;
 }
@@ -1192,15 +1111,7 @@ ovstack_init_net (struct net * net)
 static __net_exit void
 ovstack_exit_net (struct net * net)
 {
-	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
-
-	/* destroy socket */
-	if (ovnet->sock) {
-		sk_release_kernel (ovnet->sock->sk);
-		ovnet->sock = NULL;
-	}
-
-	/* destroy apps */
+	/* XXX: destroy apps */
 	
 	return;
 }
@@ -2303,8 +2214,8 @@ EXPORT_SYMBOL (ovstack_own_node_id);
 
 
 int
-ovstack_register_app_ops (struct net * net, int app, int (*app_recv_ops)
-			  (struct sock * sk, struct sk_buff * skb))
+ovstack_register_app_ops (struct net * net, int app,
+			  int (*app_recv_ops) (struct sk_buff * skb))
 {
 	int n;
 	struct ovstack_net * ovnet = net_generic (net, ovstack_net_id);
@@ -2400,6 +2311,12 @@ EXPORT_SYMBOL (ovstack_unregister_app_ops);
  *	init/exit module
  *****************************/
 
+static struct net_protocol ovstack_ip_protocol __read_mostly = {
+	.handler	= ovstack_recv,
+	.netns_ok	= 1,
+};
+
+
 static int
 __init ovstack_init_module (void)
 {
@@ -2419,11 +2336,17 @@ __init ovstack_init_module (void)
 	if (rc != 0)
 		goto reg_family_failed;
 
+	rc = inet_add_protocol (&ovstack_ip_protocol, IPPROTO_OVSTACK);
+	if (rc != 0)
+		goto reg_ipproto_failed;
+
 	printk (KERN_INFO "overlay stack (version %s) is loaded\n", 
 		OVSTACK_VERSION);
 
 	return 0;
 
+reg_ipproto_failed:
+	genl_unregister_family (&ovstack_nl_family);
 
 reg_family_failed:
 	genl_unregister_family (&ovstack_nl_event_family);
@@ -2439,6 +2362,7 @@ static void
 __exit ovstack_exit_module (void)
 {
 
+	inet_del_protocol (&ovstack_ip_protocol, IPPROTO_OVSTACK);
 	genl_unregister_family (&ovstack_nl_event_family);
 	genl_unregister_family (&ovstack_nl_family);
 	unregister_pernet_subsys (&ovstack_net_ops);

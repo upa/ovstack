@@ -429,7 +429,7 @@ oveth_snoop (struct oveth_dev * oveth, __be32 ov_src, const u8 * src_mac)
 }
 
 static int
-oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
+oveth_encap_recv (struct sk_buff * skb)
 {
 	__u32 vni;
 	struct ovhdr * ovh;
@@ -443,7 +443,7 @@ oveth_udp_encap_recv (struct sock * sk, struct sk_buff * skb)
 	
 	ovh = (struct ovhdr *) skb->data;
 	vni = ntohl (ovh->ov_vni) >> 8;
-	net = sock_net (sk);
+	net = dev_net (skb->dev);
 	oveth = find_oveth_by_vni (net, vni);
 
         __skb_pull (skb, sizeof (struct ovhdr));
@@ -1140,7 +1140,7 @@ oveth_init_net (struct net * net)
 
 	/* register ovstack callback */
 	rc = ovstack_register_app_ops (net, OVAPP_ETHERNET,
-				       oveth_udp_encap_recv);
+				       oveth_encap_recv);
 	if (!rc) {
 		printk (KERN_ERR "failed to register as ovstack app\n");
 		return -1;

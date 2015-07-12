@@ -17,6 +17,7 @@
 #define OVSTACK_PORT            60002
 #define OVSTACK_HEADER_VERSION	1
 
+#define IPPROTO_OVSTACK		253
 
 /* overlay header */
 /*
@@ -52,8 +53,8 @@ struct ovhdr {
  */
 
 __be32 ovstack_own_node_id (struct net * net, u8 app);
-int ovstack_register_app_ops (struct net * net, int app, int (*app_recv_ops)
-			      (struct sock * sk, struct sk_buff * skb));
+int ovstack_register_app_ops (struct net * net, int app,
+			      int (*app_recv_ops) (struct sk_buff * skb));
 int ovstack_unregister_app_ops (struct net * net, int app);
 
 netdev_tx_t ovstack_xmit (struct sk_buff * skb, struct net_device * dev);
