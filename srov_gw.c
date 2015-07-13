@@ -17,6 +17,9 @@
 #include <net/route.h>
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
+#include <uapi/linux/ip.h>
+#include <uapi/linux/tcp.h>
+#include <uapi/linux/udp.h>
 #include <uapi/linux/netfilter.h>
 #include <uapi/linux/netfilter_ipv4.h>
 #include <uapi/linux/netfilter_ipv6.h>
@@ -34,20 +37,9 @@ MODULE_LICENSE ("GPL");
 MODULE_AUTHOR ("upa@haeena.net");
 
 
-#define FLOW_HASH_BITS	8	/* hash table size for flow */
 
 
-/* per net_netmaspace instance */
-static unsigned int srovgw_net_id;
-struct srovgw_net {
-	/* hashtable for struct srov_session */
-	struct srov_session_table session_table;
-};
-
-
-
-
-/* - node pool for one IP address.
+/* - node pool for one prefix.
  * and operations for pool. node pool is used by only gateway.
  */
 struct srov_node_pool {
@@ -61,6 +53,34 @@ struct srov_node_pool {
 	int tail;
 };
 
+
+/* route table for prefix */
+struct srov_route_table {
+	struct hlist_head route_list[SROV_HASH_SIZE];
+	rwlock_t lock;
+};
+
+struct srov_route {
+	struct hlist_node	hlist;	/* private: used by route_table */
+	struct rcu_head		rcu;
+	
+	__be32	dst;	/* IP address */
+	struct srov_node_pool pool;
+};
+
+
+/* per net_netmaspace instance */
+static unsigned int srovgw_net_id;
+struct srovgw_net {
+	/* hashtable for struct srov_session */
+	struct srov_session_table session_table;
+
+	/* hashtable for struct srov_route */
+	struct srov_route_table route_table;
+};
+
+
+
 static void
 srov_node_pool_add (struct srov_node_pool * pool, __be32 node_id)
 {
@@ -70,16 +90,16 @@ srov_node_pool_add (struct srov_node_pool * pool, __be32 node_id)
 		return;
 	}
 
-	write_lock_bh (&pool->lock);
+	WRITE_LOCK (pool);
 	pool->nodelist[pool->tail++] = node_id;
 	pool->count++;
-	write_unlock_bh (&pool->lock);
+	WRITE_UNLOCK (pool);
 
 	return;
 }
 
 static void
-srov_node_pool_del (struct srov_node_pool * pool, __be32 node_id)
+srov_node_pool_delete (struct srov_node_pool * pool, __be32 node_id)
 {
 	int p;
 
@@ -88,8 +108,7 @@ srov_node_pool_del (struct srov_node_pool * pool, __be32 node_id)
 			__func__, &node_id);
 	}
 
-	write_lock_bh (&pool->lock);
-
+	WRITE_LOCK (pool);
 	for (p = 0; p < MAX_POOL_SIZE; p++) {
 		if (pool->nodelist[p] == node_id) {
 			pool->nodelist[p] = 0;
@@ -100,8 +119,7 @@ srov_node_pool_del (struct srov_node_pool * pool, __be32 node_id)
 			break;
 		}
 	}
-
-	write_unlock_bh (&pool->lock);
+	WRITE_UNLOCK (pool);
 }
 
 static __be32
@@ -112,12 +130,80 @@ srov_node_pool_get (struct srov_node_pool * pool, unsigned int key)
 	if (pool->count == 0)
 		return 0;
 
+	READ_LOCK (pool);
 	read_lock_bh (&pool->lock);
 	dst = pool->nodelist[key % pool->count];
-	read_unlock_bh (&pool->lock);
+	READ_UNLOCK (pool);
 
 	return dst;
 }
+
+
+static inline struct hlist_head *
+srov_srt_head (struct srov_route_table * srt, unsigned int key)
+{
+	return &srt->route_list[hash_32 (key, SROV_HASH_BITS)];
+}
+
+static struct srov_route *
+srov_route_find (struct srov_route_table * srt, __be32 dst)
+{
+	struct srov_route * sr;
+
+	READ_LOCK (srt);
+	hlist_for_each_entry_rcu (sr, srov_srt_head (srt, dst), hlist) {
+		if (sr->dst == dst) {
+			READ_UNLOCK (srt);
+			return sr;
+		}
+	}
+	READ_UNLOCK (srt);
+
+	return NULL;
+}
+
+static struct srov_route *
+srov_route_create (__be32 dst)
+{
+	int f = GFP_KERNEL;
+	struct srov_route * sr;
+
+	sr = (struct srov_route *) kmalloc (sizeof (struct srov_route), f);
+
+	memset (sr, 0, sizeof (struct srov_route));
+	sr->dst = dst;
+
+	return sr;
+}
+
+static void
+srov_route_add (struct srov_route_table * srt, struct srov_route * sr)
+{
+	hlist_add_head_rcu (&sr->hlist, srov_srt_head (srt, sr->dst));
+}
+
+static inline void
+srov_route_destroy (struct srov_route * sr)
+{
+	hlist_del_rcu (&sr->hlist);
+	kfree_rcu (sr, rcu);
+}
+
+static inline void
+srov_route_table_destroy (struct srov_route_table * srt)
+{
+	unsigned int h;
+	struct srov_route * sr;
+
+	for (h = 0; h < SROV_HASH_SIZE; h++) {
+		struct hlist_node * p, * n;
+		hlist_for_each_safe (p, n, &srt->route_list[h]) {
+			sr = container_of (p, struct srov_route, hlist);
+			srov_route_destroy (sr);
+		}
+	}
+}
+
 
 
 /* - nf nook ops.
@@ -132,7 +218,105 @@ nf_ovsrgw_forward (const struct nf_hook_ops * ops,
 		   const struct net_device * out,
 		   int (*okfn) (struct sk_buff *))
 {
-	return NF_ACCEPT;
+
+	/* 1.
+	 * Find flow,
+	 * if found, create flow, and assign destination from node pool
+	 * send to the destination.
+	 */
+
+	int rc;
+	u8 protocol;
+	u16 sport, dport;
+	__be32 saddr, daddr;
+	unsigned int key;
+	struct iphdr * ip;
+	struct tcphdr * tcp;
+	struct udphdr * udp;
+	struct ovhdr * ovh;
+	struct srov_route * sr;
+	struct srov_session * ss;
+	struct srovgw_net * sgnet;
+
+	sgnet = net_generic (dev_net (skb->dev), srovgw_net_id);
+
+
+	ip = (struct iphdr *) skb_network_header (skb);
+	protocol = ip->protocol;
+	saddr = ip->saddr;
+	daddr = ip->daddr;
+
+	if (protocol == IPPROTO_TCP) {
+		tcp = (struct tcphdr *) skb_transport_header (skb);
+		sport = tcp->source;
+		dport = tcp->dest;
+	} else if (protocol == IPPROTO_UDP) {
+		udp = (struct udphdr *) skb_transport_header (skb);
+		sport = udp->source;
+		dport = udp->dest;
+	} else
+		return NF_ACCEPT;
+	
+	key = SROV_FLOW_KEY (protocol, saddr, daddr, sport, dport);
+
+	/* find or create session */
+	sr = NULL;
+	ss = srov_session_find (&sgnet->session_table, protocol,
+				saddr, daddr, sport, dport);
+	if (!ss) {
+		sr = srov_route_find (&sgnet->route_table, daddr);
+		if (!sr) {
+			/* not proxyed packet */
+			return NF_ACCEPT;
+		}
+
+		WRITE_LOCK (&sgnet->session_table);
+		ss = srov_session_create (protocol, saddr, daddr,
+					  sport, dport, GFP_ATOMIC);
+		if (!ss) {
+			WRITE_UNLOCK (&sgnet->session_table);
+			return NF_DROP;
+		}
+
+		srov_session_add (&sgnet->session_table, ss);
+
+		WRITE_UNLOCK (&sgnet->session_table);
+	}
+
+	if (ss->dst == 0) {
+		/* reassign destination from node pool */
+		sr = srov_route_find (&sgnet->route_table, daddr);
+		ss->dst = srov_node_pool_get (&sr->pool, key);
+	}
+
+	/* encap it ! remove iphdr, and add ovhdr */
+	if (skb_cow_head (skb, sizeof (struct ovhdr) - (ip->ihl << 2))) {
+		pr_debug ("srovgw:%s: failed to alloc skb_cow_head", __func__);
+	}
+
+	ovh = (struct ovhdr *)
+		__skb_push (skb, sizeof (struct ovhdr) - (ip->ihl << 2));
+	
+	ovh->ov_version	= OVSTACK_HEADER_VERSION;
+	ovh->ov_ttl	= OVSTACK_TTL;
+	ovh->ov_app	= OVAPP_SROV;
+	ovh->ov_flags	= 0;
+	ovh->ov_vni	= htonl (protocol << 8);
+	ovh->ov_hash	= key;
+	ovh->ov_dst	= ss->dst;
+	ovh->ov_src	= ovstack_own_node_id (dev_net (skb->dev), OVAPP_SROV);
+
+
+	rc = ovstack_xmit (skb, skb->dev);
+
+	if (net_xmit_eval (rc) == 0) {
+		/* XXX: update packet counter of dev ? */
+		ss->pkt_count++;
+		ss->byte_count += skb->len;
+		ss->update = jiffies;
+	}
+
+	return NF_STOLEN;
 }
 
 
@@ -159,11 +343,10 @@ ovstack_srovgw_recv (struct sk_buff * skb)
 }
 
 
-/* - initalize and terminate hooks 
+/* - initalize and terminate hooks
  * init/exit net_namespace
  * init/exit module
  */
-
 
 static __net_init int
 srovgw_init_net (struct net * net)
@@ -195,6 +378,7 @@ srovgw_exit_net (struct net * net)
 	}
 
 	srov_session_table_destroy (&sgnet->session_table);
+	srov_route_table_destroy (&sgnet->route_table);
 
 	return;
 }
