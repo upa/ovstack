@@ -35,8 +35,8 @@
  */
 struct ovhdr {
 	__u8    ov_version;
-	__u8    ov_ttl;         /* 1 ~ 255 */
 	__u8 	ov_app;   	/* Next Application */
+	__u8    ov_ttl;         /* 1 ~ 255 */
 	__u8 	ov_flags;   	/* Flags */
 	__be32  ov_vni;         /* Virtual Network Identifier + hash	*/
 	__be32  ov_hash;
