@@ -70,7 +70,7 @@ netdev_tx_t ovstack_xmit (struct sk_buff * skb, struct net_device * dev);
 #define OVAPP_IP	4
 #define OVAPP_IPV6	6
 #define	OVAPP_ETHERNET	7
-
+#define OVAPP_SROV	8
 
 
 #endif /* _LINUX_OVSTACK_ */

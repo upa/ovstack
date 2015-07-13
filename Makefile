@@ -5,7 +5,7 @@ c_flags = -DDEBUG
 
 CC = gcc -Wall -O0
 
-obj-m := ovstack.o oveth.o
+obj-m := ovstack.o oveth.o srov_gw.o
 
 all:
 	make -C $(KERNELSRCDIR) SUBDIRS=$(BUILD_DIR) KBUILD_VERBOSE=$(VERBOSE)  modules
