@@ -13,6 +13,7 @@
 #include <linux/rculist.h>
 #include <linux/hash.h>
 #include <net/protocol.h>
+#include <net/ip.h>
 #include <net/sock.h>
 #include <net/route.h>
 #include <net/net_namespace.h>
@@ -218,18 +219,10 @@ nf_ovsrgw_forward (const struct nf_hook_ops * ops,
 		   const struct net_device * out,
 		   int (*okfn) (struct sk_buff *))
 {
-
-	/* 1.
-	 * Find flow,
-	 * if found, create flow, and assign destination from node pool
-	 * send to the destination.
-	 */
-
 	int rc;
 	u8 protocol;
 	u16 sport, dport;
 	__be32 saddr, daddr;
-	unsigned int key;
 	struct iphdr * ip;
 	struct tcphdr * tcp;
 	struct udphdr * udp;
@@ -238,8 +231,13 @@ nf_ovsrgw_forward (const struct nf_hook_ops * ops,
 	struct srov_session * ss;
 	struct srovgw_net * sgnet;
 
-	sgnet = net_generic (dev_net (skb->dev), srovgw_net_id);
+	/*
+	 * Find flow,
+	 * if found, create flow, and assign destination from node pool
+	 * send to the destination.
+	 */
 
+	sgnet = net_generic (dev_net (skb->dev), srovgw_net_id);
 
 	ip = (struct iphdr *) skb_network_header (skb);
 	protocol = ip->protocol;
@@ -257,14 +255,11 @@ nf_ovsrgw_forward (const struct nf_hook_ops * ops,
 	} else
 		return NF_ACCEPT;
 	
-	key = SROV_FLOW_KEY (protocol, saddr, daddr, sport, dport);
-
 	/* find or create session */
-	sr = NULL;
+	sr = srov_route_find (&sgnet->route_table, daddr);
 	ss = srov_session_find (&sgnet->session_table, protocol,
 				saddr, daddr, sport, dport);
 	if (!ss) {
-		sr = srov_route_find (&sgnet->route_table, daddr);
 		if (!sr) {
 			/* not proxyed packet */
 			return NF_ACCEPT;
@@ -273,20 +268,20 @@ nf_ovsrgw_forward (const struct nf_hook_ops * ops,
 		WRITE_LOCK (&sgnet->session_table);
 		ss = srov_session_create (protocol, saddr, daddr,
 					  sport, dport, GFP_ATOMIC);
+
 		if (!ss) {
 			WRITE_UNLOCK (&sgnet->session_table);
 			return NF_DROP;
 		}
 
 		srov_session_add (&sgnet->session_table, ss);
-
 		WRITE_UNLOCK (&sgnet->session_table);
 	}
 
 	if (ss->dst == 0) {
 		/* reassign destination from node pool */
 		sr = srov_route_find (&sgnet->route_table, daddr);
-		ss->dst = srov_node_pool_get (&sr->pool, key);
+		ss->dst = srov_node_pool_get (&sr->pool, ss->key);
 	}
 
 	/* encap it ! remove iphdr, and add ovhdr */
@@ -302,7 +297,7 @@ nf_ovsrgw_forward (const struct nf_hook_ops * ops,
 	ovh->ov_app	= OVAPP_SROV;
 	ovh->ov_flags	= 0;
 	ovh->ov_vni	= htonl (protocol << 8);
-	ovh->ov_hash	= key;
+	ovh->ov_hash	= ss->id;
 	ovh->ov_dst	= ss->dst;
 	ovh->ov_src	= ovstack_own_node_id (dev_net (skb->dev), OVAPP_SROV);
 
@@ -332,14 +327,56 @@ static struct nf_hook_ops nf_srovgw_ops[] __read_mostly = {
 
 
 /* - ovstack receive ops.
- * received ovstack packet is decapsulated, and original TCP/UDP header is
+ * decapsulate ovstack packets, and original TCP/UDP header is
  * constructed by using hash value as the key.
  */
 
 static int
 ovstack_srovgw_recv (struct sk_buff * skb)
 {
-	return 0;
+	unsigned int id;
+	struct iphdr * ip;
+	struct ovhdr * ovh;
+	struct srov_session * ss;
+	struct srovgw_net * sgnet;
+	struct flowi4 fl4;
+
+	sgnet = net_generic (dev_net (skb->dev), srovgw_net_id);
+
+	ovh = (struct ovhdr *) skb->data;
+
+	id = ovh->ov_hash;
+
+	/* find session, and rebuild original packet  */
+	ss = srov_session_find_by_id (&sgnet->session_table, id);
+	if (!ss) {
+		pr_debug ("srovgw:%s: invalid session id %u", __func__, id);
+		return -ENOENT;
+	}
+
+	__skb_pull (skb, sizeof (struct ovhdr));
+	ip = (struct iphdr *) __skb_push (skb, sizeof (struct iphdr));
+	skb_reset_network_header (skb);
+	ip->version	= 4;
+	ip->ihl		= sizeof (struct iphdr) >> 2;
+	ip->frag_off	= 0;
+	ip->protocol	= ss->protocol;
+	ip->tos		= 0;
+	ip->saddr	= ss->saddr;
+	ip->daddr	= ss->daddr;
+	ip->ttl 	= 16;
+
+	/* XXX: udp/tcp cksum must be re-calculated */
+	skb->ip_summed = CHECKSUM_NONE;	
+
+	/* reroute process. */
+	skb_dst_drop (skb);
+	memset (&fl4, 0, sizeof (struct flowi4));
+	fl4.saddr = ss->saddr;
+	fl4.daddr = ss->daddr;
+
+	/* XXX: check return code of ip_queue_xmit */
+	return ip_queue_xmit (skb, (struct flowi *) &fl4);
 }
 
 
